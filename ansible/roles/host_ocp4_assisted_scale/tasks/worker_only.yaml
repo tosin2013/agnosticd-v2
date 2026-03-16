@@ -53,7 +53,8 @@
     loop: "{{ control_plane_worker_nodes }}"
     when: control_plane_worker_nodes | length > 0
 
-  - name: Set mastersSchedulable to false
+  - name: Set mastersSchedulable to false for multinode control planes
+    when: current_instance_control_planes | int > 1
     kubernetes.core.k8s:
       api_version: config.openshift.io/v1
       kind: Scheduler
@@ -63,33 +64,22 @@
         spec:
           mastersSchedulable: false
 
-  - name: Drain and uncordon control-plane nodes
-    when:
-    - worker_drain_control_plane | default(true) | bool
-    - control_plane_worker_nodes | length > 0
-    block:
-    - name: Drain control-plane node
-      kubernetes.core.k8s_drain:
-        name: "{{ item }}"
-        state: drain
-        delete_options:
-          ignore_daemonsets: true
-          delete_emptydir_data: true
-          force: true
-      loop: "{{ control_plane_worker_nodes }}"
-      # Ignore errors (e.g. apiserver PDB violation)
-      ignore_errors: true
-
-    - name: Uncordon control-plane node
-      kubernetes.core.k8s_drain:
-        name: "{{ item }}"
-        state: uncordon
-      loop: "{{ control_plane_worker_nodes }}"
+  - name: Wait for worker node count to match expected count
+    kubernetes.core.k8s_info:
+      api_version: v1
+      kind: Node
+      label_selectors:
+      - "node-role.kubernetes.io/worker="
+      - "!node-role.kubernetes.io/control-plane"
+      - "!node-role.kubernetes.io/master"
+    register: r_current_workers
+    until: r_current_workers.resources | length == (current_instance_workers | int + worker_instance_count | int)
+    retries: 30
+    delay: 10
 
   - name: Display worker-only mode configuration results
     ansible.builtin.debug:
       msg:
       - "Worker-only mode configured successfully"
       - "Control-plane nodes with worker label removed: {{ control_plane_worker_nodes }}"
-      - "mastersSchedulable: false"
-      - "Control-plane nodes drained: {{ worker_drain_control_plane | default(true) | bool }}"
+      - "mastersSchedulable: {{ current_instance_control_planes | int == 1 | bool }}"
