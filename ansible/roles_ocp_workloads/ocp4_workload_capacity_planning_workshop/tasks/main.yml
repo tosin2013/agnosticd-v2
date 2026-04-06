@@ -1,0 +1,22 @@
+---
+# Main entry point for capacity planning workshop workload
+
+- name: Running Pre Workload Tasks
+  ansible.builtin.import_tasks: pre_workload.yml
+  become: "{{ become_override | bool }}"
+  when: ACTION == "provision" or ACTION == "create" or ACTION == "install"
+
+- name: Running Workload Tasks
+  ansible.builtin.import_tasks: workload.yml
+  become: "{{ become_override | bool }}"
+  when: ACTION == "provision" or ACTION == "create" or ACTION == "install"
+
+- name: Running Post Workload Tasks
+  ansible.builtin.import_tasks: post_workload.yml
+  become: "{{ become_override | bool }}"
+  when: ACTION == "provision" or ACTION == "create" or ACTION == "install"
+
+- name: Running Workload removal Tasks
+  ansible.builtin.import_tasks: remove_workload.yml
+  become: "{{ become_override | bool }}"
+  when: ACTION == "destroy" or ACTION == "remove" or ACTION == "uninstall"

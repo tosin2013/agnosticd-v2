@@ -1,0 +1,67 @@
+---
+# Deploy Capacity Planning Workshop via ArgoCD
+
+- name: Create workshop namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+        labels:
+          demo.redhat.com/application: capacity-workshop
+          demo.redhat.com/guid: "{{ guid }}"
+
+- name: Deploy workshop via ArgoCD Application
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'argocd-application.yaml.j2') }}"
+
+- name: Wait for ArgoCD Application to sync
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: capacity-planning-workshop
+    namespace: openshift-gitops
+  register: r_argocd_app
+  retries: 60
+  delay: 10
+  until:
+    - r_argocd_app.resources is defined
+    - r_argocd_app.resources | length > 0
+    - r_argocd_app.resources[0].status is defined
+    - r_argocd_app.resources[0].status.sync.status == "Synced"
+
+- name: Wait for RHACM MultiClusterHub to be ready
+  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+  kubernetes.core.k8s_info:
+    api_version: operator.open-cluster-management.io/v1
+    kind: MultiClusterHub
+    name: multiclusterhub
+    namespace: open-cluster-management
+  register: r_mch
+  retries: 90
+  delay: 20
+  until:
+    - r_mch.resources is defined
+    - r_mch.resources | length > 0
+    - r_mch.resources[0].status is defined
+    - r_mch.resources[0].status.phase is defined
+    - r_mch.resources[0].status.phase == "Running"
+
+- name: Wait for sample applications to be ready
+  when: ocp4_workload_capacity_planning_workshop_deploy_sample_apps | bool
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+    label_selectors:
+      - demo.redhat.com/application=capacity-workshop
+  register: r_sample_apps
+  retries: 30
+  delay: 10
+  until:
+    - r_sample_apps.resources is defined
+    - r_sample_apps.resources | length > 0
+    - r_sample_apps.resources | selectattr('status.availableReplicas', 'defined') | list | length == r_sample_apps.resources | length

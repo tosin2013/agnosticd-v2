@@ -1,0 +1,63 @@
+---
+# Post-workload tasks
+
+- name: Get Showroom route URL
+  when: ocp4_workload_capacity_planning_workshop_deploy_showroom | bool
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: showroom
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+  register: r_showroom_route
+  retries: 30
+  delay: 10
+  until:
+    - r_showroom_route.resources is defined
+    - r_showroom_route.resources | length > 0
+
+- name: Set showroom URL fact
+  when:
+    - ocp4_workload_capacity_planning_workshop_deploy_showroom | bool
+    - r_showroom_route.resources | length > 0
+  ansible.builtin.set_fact:
+    showroom_url: "https://{{ r_showroom_route.resources[0].spec.host }}"
+
+- name: Create userinfo ConfigMap with workshop access details
+  when: ocp4_workload_capacity_planning_workshop_deploy_showroom | bool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: userinfo
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+        labels:
+          demo.redhat.com/userinfo: "true"
+      data:
+        workshop_url: "{{ showroom_url | default('') }}"
+        cluster_domain: "{{ openshift_cluster_ingress_domain | default('') }}"
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+        guid: "{{ guid }}"
+        rhacm_console: "https://multicloud-console.apps.{{ openshift_cluster_ingress_domain | default('') }}"
+        grafana_url: "https://grafana-open-cluster-management-observability.apps.{{ openshift_cluster_ingress_domain | default('') }}"
+
+- name: Print workshop access information
+  agnosticd_user_info:
+    msg: |
+      ============================================================
+      Workshop deployed successfully!
+      ============================================================
+
+      Access the lab guide at:
+      {{ showroom_url | default('Showroom URL pending...') }}
+
+      RHACM Console:
+      https://multicloud-console.apps.{{ openshift_cluster_ingress_domain | default('N/A') }}
+
+      Grafana (Observability):
+      https://grafana-open-cluster-management-observability.apps.{{ openshift_cluster_ingress_domain | default('N/A') }}
+
+      Namespace: {{ ocp4_workload_capacity_planning_workshop_namespace }}
+      GUID: {{ guid }}
+      ============================================================

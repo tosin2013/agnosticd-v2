@@ -1,0 +1,40 @@
+---
+# Pre-workload validation tasks
+
+- name: Validate OpenShift GitOps is installed
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    namespace: openshift-gitops
+  register: r_gitops_csv
+  failed_when: r_gitops_csv.resources | length == 0
+  retries: 5
+  delay: 10
+  until: r_gitops_csv.resources | length > 0
+
+- name: Validate storage class exists (for RHACM observability)
+  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ ocp4_workload_capacity_planning_workshop_rhacm_storage_class }}"
+  register: r_storage_class
+  failed_when: r_storage_class.resources | length == 0
+
+- name: Display workshop deployment information
+  agnosticd_user_info:
+    msg: |
+      ============================================================
+      Deploying Strategic Capacity Planning & Forecasting Workshop
+      ============================================================
+      Namespace: {{ ocp4_workload_capacity_planning_workshop_namespace }}
+      GUID: {{ guid }}
+      Cluster Domain: {{ openshift_cluster_ingress_domain | default('N/A') }}
+
+      Components:
+      - RHACM: {{ ocp4_workload_capacity_planning_workshop_deploy_rhacm }}
+      - Monitoring Config: {{ ocp4_workload_capacity_planning_workshop_deploy_monitoring }}
+      - Sample Apps: {{ ocp4_workload_capacity_planning_workshop_deploy_sample_apps }}
+      - Simulation Toolkit: {{ ocp4_workload_capacity_planning_workshop_deploy_simulation }}
+      - Showroom: {{ ocp4_workload_capacity_planning_workshop_deploy_showroom }}
+      ============================================================

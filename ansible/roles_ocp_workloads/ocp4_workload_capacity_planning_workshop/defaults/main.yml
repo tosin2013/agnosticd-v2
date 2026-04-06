@@ -1,0 +1,35 @@
+---
+# Become (root) is not required for OCP workloads
+become_override: false
+
+# Namespace for workshop deployment
+ocp4_workload_capacity_planning_workshop_namespace: capacity-workshop
+
+# Git repositories
+ocp4_workload_capacity_planning_workshop_helm_repo: https://github.com/tosin2013/openshift-capacity-planning-workshop.git
+ocp4_workload_capacity_planning_workshop_helm_branch: main
+ocp4_workload_capacity_planning_workshop_content_repo: https://github.com/tosin2013/capacity-planning-lab-guide.git
+ocp4_workload_capacity_planning_workshop_content_branch: main
+
+# Component toggles
+ocp4_workload_capacity_planning_workshop_deploy_rhacm: true
+ocp4_workload_capacity_planning_workshop_deploy_monitoring: true
+ocp4_workload_capacity_planning_workshop_deploy_sample_apps: true
+ocp4_workload_capacity_planning_workshop_deploy_simulation: true
+ocp4_workload_capacity_planning_workshop_deploy_showroom: true
+
+# Node density configuration (disabled by default due to MachineConfig rollout)
+ocp4_workload_capacity_planning_workshop_enable_node_density: false
+ocp4_workload_capacity_planning_workshop_max_pods: 110
+
+# RHACM observability configuration
+ocp4_workload_capacity_planning_workshop_rhacm_storage_class: ocs-external-storagecluster-ceph-rbd
+ocp4_workload_capacity_planning_workshop_rhacm_retention_days: 30
+
+# Showroom configuration
+ocp4_workload_capacity_planning_workshop_showroom_terminal_image: quay.io/rhpds/openshift-showroom-terminal-ocp:latest
+
+# Auto-injected variables from AgnosticD (documented for reference)
+# guid: unique identifier for deployment
+# cluster_domain: OpenShift cluster domain (apps subdomain)
+# cluster_api_url: OpenShift API endpoint
