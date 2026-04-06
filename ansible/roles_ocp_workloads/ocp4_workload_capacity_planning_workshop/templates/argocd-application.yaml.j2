@@ -24,12 +24,7 @@ spec:
 
         components:
           rhacm:
-            enabled: {{ ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool | lower }}
-            namespace: open-cluster-management
-            observability:
-              enabled: {{ ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool | lower }}
-              storageClass: {{ ocp4_workload_capacity_planning_workshop_rhacm_storage_class }}
-              retentionDays: {{ ocp4_workload_capacity_planning_workshop_rhacm_retention_days }}
+            enabled: false  # RHACM deployed via AgnosticD workload role instead
               retentionResolutionRaw: 7d
               retentionLocal: 7d
 

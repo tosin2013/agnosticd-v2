@@ -1,6 +1,76 @@
 ---
-# Deploy Capacity Planning Workshop via ArgoCD
+# Deploy Capacity Planning Workshop
 
+# Step 1: Deploy RHACM using AgnosticD core_workloads role
+- name: Deploy RHACM operator and MultiClusterHub
+  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+  ansible.builtin.include_role:
+    name: agnosticd.core_workloads.ocp4_workload_rhacm
+  vars:
+    ocp4_workload_rhacm_acm_channel: "{{ ocp4_workload_capacity_planning_workshop_rhacm_channel }}"
+
+# Step 2: Configure RHACM Observability
+- name: Create Thanos object storage secret
+  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: thanos-object-storage
+        namespace: open-cluster-management
+      type: Opaque
+      stringData:
+        thanos.yaml: |
+          type: s3
+          config:
+            bucket: "{{ ocp4_workload_capacity_planning_workshop_rhacm_thanos_bucket | default('rhacm-metrics') }}"
+            endpoint: "s3.openshift-storage.svc:443"
+            insecure: false
+            access_key: "{{ ocp4_workload_capacity_planning_workshop_rhacm_thanos_access_key | default('') }}"
+            secret_key: "{{ ocp4_workload_capacity_planning_workshop_rhacm_thanos_secret_key | default('') }}"
+
+- name: Deploy RHACM MultiClusterObservability
+  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: observability.open-cluster-management.io/v1beta2
+      kind: MultiClusterObservability
+      metadata:
+        name: observability
+        namespace: open-cluster-management
+      spec:
+        observabilityAddonSpec:
+          enableMetrics: true
+        storageConfig:
+          metricObjectStorage:
+            name: thanos-object-storage
+            key: thanos.yaml
+          storageClass: "{{ ocp4_workload_capacity_planning_workshop_rhacm_storage_class }}"
+          retentionConfig:
+            retentionInLocal: "{{ ocp4_workload_capacity_planning_workshop_rhacm_retention_local }}"
+            retentionResolutionRaw: "{{ ocp4_workload_capacity_planning_workshop_rhacm_retention_resolution }}"
+
+- name: Wait for RHACM Observability to be ready
+  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+  kubernetes.core.k8s_info:
+    api_version: observability.open-cluster-management.io/v1beta2
+    kind: MultiClusterObservability
+    name: observability
+    namespace: open-cluster-management
+  register: r_mco
+  retries: 60
+  delay: 15
+  until:
+    - r_mco.resources is defined
+    - r_mco.resources | length > 0
+    - r_mco.resources[0].status is defined
+    - r_mco.resources[0].status.conditions is defined
+    - r_mco.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | list | first == 'True'
+
+# Step 3: Create workshop namespace
 - name: Create workshop namespace
   kubernetes.core.k8s:
     state: present
@@ -13,6 +83,7 @@
           demo.redhat.com/application: capacity-workshop
           demo.redhat.com/guid: "{{ guid }}"
 
+# Step 4: Deploy workshop components via ArgoCD
 - name: Deploy workshop via ArgoCD Application
   kubernetes.core.k8s:
     state: present
@@ -32,23 +103,6 @@
     - r_argocd_app.resources | length > 0
     - r_argocd_app.resources[0].status is defined
     - r_argocd_app.resources[0].status.sync.status == "Synced"
-
-- name: Wait for RHACM MultiClusterHub to be ready
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
-  kubernetes.core.k8s_info:
-    api_version: operator.open-cluster-management.io/v1
-    kind: MultiClusterHub
-    name: multiclusterhub
-    namespace: open-cluster-management
-  register: r_mch
-  retries: 90
-  delay: 20
-  until:
-    - r_mch.resources is defined
-    - r_mch.resources | length > 0
-    - r_mch.resources[0].status is defined
-    - r_mch.resources[0].status.phase is defined
-    - r_mch.resources[0].status.phase == "Running"
 
 - name: Wait for sample applications to be ready
   when: ocp4_workload_capacity_planning_workshop_deploy_sample_apps | bool

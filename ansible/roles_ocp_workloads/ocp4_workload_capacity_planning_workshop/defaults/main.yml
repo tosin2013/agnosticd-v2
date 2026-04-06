@@ -22,9 +22,16 @@ ocp4_workload_capacity_planning_workshop_deploy_showroom: true
 ocp4_workload_capacity_planning_workshop_enable_node_density: false
 ocp4_workload_capacity_planning_workshop_max_pods: 110
 
+# RHACM configuration
+ocp4_workload_capacity_planning_workshop_rhacm_channel: release-2.14
+
 # RHACM observability configuration
 ocp4_workload_capacity_planning_workshop_rhacm_storage_class: ocs-external-storagecluster-ceph-rbd
-ocp4_workload_capacity_planning_workshop_rhacm_retention_days: 30
+ocp4_workload_capacity_planning_workshop_rhacm_retention_local: 7d
+ocp4_workload_capacity_planning_workshop_rhacm_retention_resolution: 30d
+ocp4_workload_capacity_planning_workshop_rhacm_thanos_bucket: rhacm-metrics
+ocp4_workload_capacity_planning_workshop_rhacm_thanos_access_key: ""  # Will be auto-generated if empty
+ocp4_workload_capacity_planning_workshop_rhacm_thanos_secret_key: ""  # Will be auto-generated if empty
 
 # Showroom configuration
 ocp4_workload_capacity_planning_workshop_showroom_terminal_image: quay.io/rhpds/openshift-showroom-terminal-ocp:latest
