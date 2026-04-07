@@ -41,6 +41,14 @@
           demo.redhat.com/application: capacity-workshop
           demo.redhat.com/guid: "{{ guid }}"
 
+- name: Get cluster pull secret from openshift-config
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: pull-secret
+    namespace: openshift-config
+  register: r_pull_secret
+
 - name: Create pull secret for SNO cluster installation
   kubernetes.core.k8s:
     state: present
@@ -52,7 +60,7 @@
         namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
       type: kubernetes.io/dockerconfigjson
       data:
-        .dockerconfigjson: "{{ lookup('kubernetes.core.k8s', kind='Secret', namespace='openshift-config', resource_name='pull-secret').data['.dockerconfigjson'] }}"
+        .dockerconfigjson: "{{ r_pull_secret.resources[0].data['.dockerconfigjson'] }}"
 
 - name: Create SSH key for SNO cluster access
   block:
