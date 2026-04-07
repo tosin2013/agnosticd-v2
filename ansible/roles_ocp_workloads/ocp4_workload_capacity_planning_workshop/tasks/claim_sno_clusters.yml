@@ -61,90 +61,98 @@
       {% endfor %}
       ============================================================
 
-- name: Retrieve kubeconfig secrets for claimed SNO clusters
-  vars:
-    _user_number: "{{ _n | int + 1 }}"
-    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
-    _claim_name: "{{ guid }}-{{ _user }}"
-    _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Secret
-    name: "{{ _sno_namespace }}-admin-kubeconfig"
-    namespace: "{{ _sno_namespace }}"
-  register: r_sno_kubeconfigs
-  retries: 30
-  delay: 10
-  until:
-    - r_sno_kubeconfigs.resources is defined
-    - r_sno_kubeconfigs.resources | length > 0
-  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
-  loop_control:
-    loop_var: _n
-    label: "{{ _user }}"
+# ============================================================
+# POST-INSTALLATION TASKS (disabled - run after SNO install completes)
+# ============================================================
+# The tasks below require SNO clusters to be fully installed with OpenShift.
+# SNO installation takes 30-45 minutes after Agent registration.
+# These should be moved to a separate post_sno_install.yml playbook.
+# ============================================================
 
-- name: Verify SNO clusters are accessible
-  vars:
-    _user_number: "{{ _n | int + 1 }}"
-    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
-    _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
-    _sno_kubeconfig: "{{ r_sno_kubeconfigs.results[_n].resources[0].data.kubeconfig | b64decode }}"
-    _sno_kubeconfig_path: "/tmp/{{ guid }}-{{ _user }}-kubeconfig"
-  block:
-    - name: Write SNO kubeconfig to temp file
-      ansible.builtin.copy:
-        content: "{{ _sno_kubeconfig }}"
-        dest: "{{ _sno_kubeconfig_path }}"
-        mode: '0600'
-
-    - name: Test SNO cluster connectivity
-      kubernetes.core.k8s_cluster_info:
-        kubeconfig: "{{ _sno_kubeconfig_path }}"
-      register: r_sno_info
-
-    - name: Display SNO cluster information
-      ansible.builtin.debug:
-        msg: |
-          User {{ _user }} SNO cluster:
-          Version: {{ r_sno_info.version.server.kubernetes.gitVersion }}
-          API: {{ r_sno_info.connection.host }}
-  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
-  loop_control:
-    loop_var: _n
-    label: "{{ _user }}"
-
-- name: Register SNO clusters with RHACM hub
-  vars:
-    _user_number: "{{ _n | int + 1 }}"
-    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
-    _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
-  kubernetes.core.k8s_info:
-    api_version: cluster.open-cluster-management.io/v1
-    kind: ManagedCluster
-    name: "{{ _sno_namespace }}"
-  register: r_managed_clusters
-  retries: 30
-  delay: 10
-  until:
-    - r_managed_clusters.resources is defined
-    - r_managed_clusters.resources | length > 0
-    - r_managed_clusters.resources[0].status is defined
-    - r_managed_clusters.resources[0].status.conditions is defined
-    - r_managed_clusters.resources[0].status.conditions | selectattr('type', 'equalto', 'ManagedClusterConditionAvailable') | map(attribute='status') | select('equalto', 'True') | list | length > 0
-  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
-  loop_control:
-    loop_var: _n
-    label: "{{ _user }}"
-
-- name: Display SNO cluster registration summary
-  ansible.builtin.debug:
-    msg: |
-      ============================================================
-      SNO Clusters registered with RHACM
-      ============================================================
-      {% for item in r_managed_clusters.results %}
-      User {{ loop.index }}: {{ item.resources[0].metadata.name }}
-        Status: {{ item.resources[0].status.conditions | selectattr('type', 'equalto', 'ManagedClusterConditionAvailable') | map(attribute='status') | first }}
-        API URL: {{ item.resources[0].spec.managedClusterClientConfigs[0].url }}
-      {% endfor %}
-      ============================================================
+# - name: Retrieve kubeconfig secrets for claimed SNO clusters
+#   vars:
+#     _user_number: "{{ _n | int + 1 }}"
+#     _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+#     _claim_name: "{{ guid }}-{{ _user }}"
+#     _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
+#   kubernetes.core.k8s_info:
+#     api_version: v1
+#     kind: Secret
+#     name: "{{ _sno_namespace }}-admin-kubeconfig"
+#     namespace: "{{ _sno_namespace }}"
+#   register: r_sno_kubeconfigs
+#   retries: 30
+#   delay: 10
+#   until:
+#     - r_sno_kubeconfigs.resources is defined
+#     - r_sno_kubeconfigs.resources | length > 0
+#   loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+#   loop_control:
+#     loop_var: _n
+#     label: "{{ _user }}"
+# 
+# - name: Verify SNO clusters are accessible
+#   vars:
+#     _user_number: "{{ _n | int + 1 }}"
+#     _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+#     _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
+#     _sno_kubeconfig: "{{ r_sno_kubeconfigs.results[_n].resources[0].data.kubeconfig | b64decode }}"
+#     _sno_kubeconfig_path: "/tmp/{{ guid }}-{{ _user }}-kubeconfig"
+#   block:
+#     - name: Write SNO kubeconfig to temp file
+#       ansible.builtin.copy:
+#         content: "{{ _sno_kubeconfig }}"
+#         dest: "{{ _sno_kubeconfig_path }}"
+#         mode: '0600'
+# 
+#     - name: Test SNO cluster connectivity
+#       kubernetes.core.k8s_cluster_info:
+#         kubeconfig: "{{ _sno_kubeconfig_path }}"
+#       register: r_sno_info
+# 
+#     - name: Display SNO cluster information
+#       ansible.builtin.debug:
+#         msg: |
+#           User {{ _user }} SNO cluster:
+#           Version: {{ r_sno_info.version.server.kubernetes.gitVersion }}
+#           API: {{ r_sno_info.connection.host }}
+#   loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+#   loop_control:
+#     loop_var: _n
+#     label: "{{ _user }}"
+# 
+# - name: Register SNO clusters with RHACM hub
+#   vars:
+#     _user_number: "{{ _n | int + 1 }}"
+#     _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+#     _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
+#   kubernetes.core.k8s_info:
+#     api_version: cluster.open-cluster-management.io/v1
+#     kind: ManagedCluster
+#     name: "{{ _sno_namespace }}"
+#   register: r_managed_clusters
+#   retries: 30
+#   delay: 10
+#   until:
+#     - r_managed_clusters.resources is defined
+#     - r_managed_clusters.resources | length > 0
+#     - r_managed_clusters.resources[0].status is defined
+#     - r_managed_clusters.resources[0].status.conditions is defined
+#     - r_managed_clusters.resources[0].status.conditions | selectattr('type', 'equalto', 'ManagedClusterConditionAvailable') | map(attribute='status') | select('equalto', 'True') | list | length > 0
+#   loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+#   loop_control:
+#     loop_var: _n
+#     label: "{{ _user }}"
+# 
+# - name: Display SNO cluster registration summary
+#   ansible.builtin.debug:
+#     msg: |
+#       ============================================================
+#       SNO Clusters registered with RHACM
+#       ============================================================
+#       {% for item in r_managed_clusters.results %}
+#       User {{ loop.index }}: {{ item.resources[0].metadata.name }}
+#         Status: {{ item.resources[0].status.conditions | selectattr('type', 'equalto', 'ManagedClusterConditionAvailable') | map(attribute='status') | first }}
+#         API URL: {{ item.resources[0].spec.managedClusterClientConfigs[0].url }}
+#       {% endfor %}
+#       ============================================================
