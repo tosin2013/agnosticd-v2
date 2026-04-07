@@ -499,3 +499,12 @@
 
       This process takes approximately 30-45 minutes per cluster.
       ============================================================
+
+# ============================================================
+# Create ClusterDeployment resources
+# ============================================================
+# agentBareMetal ClusterPools don't auto-create ClusterDeployments
+# We must explicitly create them for Agents to match to
+
+- name: Create ClusterDeployment and AgentClusterInstall for SNO clusters
+  ansible.builtin.include_tasks: create_cluster_deployments.yml
