@@ -332,42 +332,44 @@
 # Create KubeVirt VMs for SNO clusters
 # ============================================================
 
-- name: Create DataVolume for InfraEnv ISO
+- name: Create PVC for InfraEnv ISO using CDI import
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: cdi.kubevirt.io/v1beta1
-      kind: DataVolume
+      apiVersion: v1
+      kind: PersistentVolumeClaim
       metadata:
         name: sno-infraenv-iso
         namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        annotations:
+          cdi.kubevirt.io/storage.import.endpoint: "{{ sno_iso_url }}"
+        labels:
+          app: containerized-data-importer
       spec:
-        source:
-          http:
-            url: "{{ sno_iso_url }}"
-        pvc:
-          accessModes:
-          - ReadWriteOnce
-          resources:
-            requests:
-              storage: 2Gi
-          storageClassName: "{{ ocp4_workload_capacity_planning_workshop_sno_storage_class }}"
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi
+        storageClassName: "{{ ocp4_workload_capacity_planning_workshop_sno_storage_class }}"
 
-- name: Wait for InfraEnv ISO DataVolume to be ready
+- name: Wait for InfraEnv ISO import to complete
   kubernetes.core.k8s_info:
-    api_version: cdi.kubevirt.io/v1beta1
-    kind: DataVolume
+    api_version: v1
+    kind: PersistentVolumeClaim
     name: sno-infraenv-iso
     namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
-  register: r_iso_dv
-  retries: 30
+  register: r_iso_pvc
+  retries: 60
   delay: 10
   until:
-    - r_iso_dv.resources is defined
-    - r_iso_dv.resources | length > 0
-    - r_iso_dv.resources[0].status is defined
-    - r_iso_dv.resources[0].status.phase is defined
-    - r_iso_dv.resources[0].status.phase == "Succeeded"
+    - r_iso_pvc.resources is defined
+    - r_iso_pvc.resources | length > 0
+    - r_iso_pvc.resources[0].status is defined
+    - r_iso_pvc.resources[0].status.phase == "Bound"
+    - r_iso_pvc.resources[0].metadata.annotations is defined
+    - r_iso_pvc.resources[0].metadata.annotations['cdi.kubevirt.io/storage.pod.phase'] is defined
+    - r_iso_pvc.resources[0].metadata.annotations['cdi.kubevirt.io/storage.pod.phase'] == "Succeeded"
 
 - name: Create SNO VMs using KubeVirt
   vars:
