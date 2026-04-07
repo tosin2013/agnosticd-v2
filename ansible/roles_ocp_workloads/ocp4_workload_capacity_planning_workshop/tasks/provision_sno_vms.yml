@@ -293,7 +293,7 @@
         # Agents will be matched to ClusterDeployments via agentSelector labels
         pullSecretRef:
           name: pull-secret
-        sshAuthorizedKey: "{{ r_ssh_pubkey.content | b64decode }}"
+        sshAuthorizedKey: "{{ (r_ssh_pubkey.content | b64decode | trim) }}"
         agentLabels:
           workshop: capacity-planning
           guid: "{{ guid }}"
