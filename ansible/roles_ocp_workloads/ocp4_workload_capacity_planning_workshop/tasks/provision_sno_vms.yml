@@ -408,8 +408,8 @@
                 disks:
                 - name: boot
                   bootOrder: 1
-                  disk:
-                    bus: virtio
+                  cdrom:
+                    bus: sata
                 - name: rootdisk
                   bootOrder: 2
                   disk:
