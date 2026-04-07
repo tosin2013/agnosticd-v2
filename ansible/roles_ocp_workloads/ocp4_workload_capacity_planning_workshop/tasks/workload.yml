@@ -227,7 +227,19 @@
   until:
     - r_sample_apps.resources is defined
     - r_sample_apps.resources | length > 0
-    - r_sample_apps.resources | selectattr('status.availableReplicas', 'defined') | list | length == r_sample_apps.resources | length
+    - >-
+      r_sample_apps.resources
+      | selectattr('spec.replicas', 'defined')
+      | selectattr('spec.replicas', 'gt', 0)
+      | selectattr('status.availableReplicas', 'defined')
+      | list
+      | length
+      ==
+      r_sample_apps.resources
+      | selectattr('spec.replicas', 'defined')
+      | selectattr('spec.replicas', 'gt', 0)
+      | list
+      | length
 
 # ============================================================
 # Post-workload configuration
@@ -300,7 +312,7 @@
 
 - name: Export workshop access information to agnosticd_user_info
   when: ocp4_workload_capacity_planning_workshop_deploy_showroom | bool
-  agnosticd_user_info:
+  agnosticd.core.agnosticd_user_info:
     msg: |
       Capacity Planning Workshop has been deployed successfully.
 
@@ -318,7 +330,7 @@
 
 - name: Export workshop access information when Showroom is disabled
   when: not (ocp4_workload_capacity_planning_workshop_deploy_showroom | bool)
-  agnosticd_user_info:
+  agnosticd.core.agnosticd_user_info:
     msg: |
       Capacity Planning Workshop has been deployed successfully.
       Showroom lab guide was not deployed.

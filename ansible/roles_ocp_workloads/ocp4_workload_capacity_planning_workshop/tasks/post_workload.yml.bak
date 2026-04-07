@@ -43,7 +43,7 @@
         grafana_url: "https://grafana-open-cluster-management-observability.apps.{{ openshift_cluster_ingress_domain | default('') }}"
 
 - name: Print workshop access information
-  agnosticd_user_info:
+  ansible.builtin.debug:
     msg: |
       ============================================================
       Workshop deployed successfully!

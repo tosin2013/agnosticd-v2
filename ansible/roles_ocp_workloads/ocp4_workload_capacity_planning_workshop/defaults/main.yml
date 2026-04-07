@@ -23,7 +23,7 @@ ocp4_workload_capacity_planning_workshop_enable_node_density: false
 ocp4_workload_capacity_planning_workshop_max_pods: 110
 
 # RHACM configuration
-ocp4_workload_capacity_planning_workshop_rhacm_channel: release-2.14
+ocp4_workload_capacity_planning_workshop_rhacm_channel: release-2.16
 
 # RHACM observability configuration
 ocp4_workload_capacity_planning_workshop_rhacm_storage_class: ocs-external-storagecluster-ceph-rbd

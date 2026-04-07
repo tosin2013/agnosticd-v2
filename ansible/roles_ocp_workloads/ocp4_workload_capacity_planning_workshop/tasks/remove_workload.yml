@@ -50,5 +50,5 @@
   ignore_errors: true
 
 - name: Print removal confirmation
-  agnosticd_user_info:
+  ansible.builtin.debug:
     msg: "Capacity Planning Workshop removed successfully"

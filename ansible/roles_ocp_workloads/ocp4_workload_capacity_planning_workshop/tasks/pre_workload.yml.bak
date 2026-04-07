@@ -22,7 +22,7 @@
   failed_when: r_storage_class.resources | length == 0
 
 - name: Display workshop deployment information
-  agnosticd_user_info:
+  ansible.builtin.debug:
     msg: |
       ============================================================
       Deploying Strategic Capacity Planning & Forecasting Workshop
