@@ -1,11 +1,14 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: capacity-planning-workshop
+  name: capacity-planning-workshop{{ '-' ~ _user if _user is defined and _user else '' }}
   namespace: openshift-gitops
   labels:
     demo.redhat.com/application: capacity-workshop
     demo.redhat.com/guid: "{{ guid }}"
+{% if _user is defined and _user %}
+    demo.redhat.com/user: "{{ _user }}"
+{% endif %}
 spec:
   project: default
   source:
@@ -15,9 +18,12 @@ spec:
     helm:
       values: |
         global:
-          namespace: {{ ocp4_workload_capacity_planning_workshop_namespace }}
+          namespace: {{ _showroom_namespace | default(ocp4_workload_capacity_planning_workshop_namespace) }}
           clusterDomain: {{ openshift_cluster_ingress_domain | default('apps.example.com') }}
           guid: "{{ guid }}"
+{% if _user is defined and _user %}
+          user: "{{ _user }}"
+{% endif %}
 
         deployer:
           domain: {{ openshift_cluster_ingress_domain | default('apps.example.com') }}
@@ -44,7 +50,7 @@ spec:
 
           showroom:
             enabled: {{ ocp4_workload_capacity_planning_workshop_deploy_showroom | bool | lower }}
-            namespace: {{ ocp4_workload_capacity_planning_workshop_namespace }}
+            namespace: {{ _showroom_namespace | default(ocp4_workload_capacity_planning_workshop_namespace) }}
             name: showroom
             content:
               repoUrl: {{ ocp4_workload_capacity_planning_workshop_content_repo }}
@@ -63,8 +69,8 @@ spec:
                   memory: "1Gi"
 
   destination:
-    server: https://kubernetes.default.svc
-    namespace: {{ ocp4_workload_capacity_planning_workshop_namespace }}
+    server: {{ _target_cluster | default('https://kubernetes.default.svc') }}
+    namespace: {{ _showroom_namespace | default(ocp4_workload_capacity_planning_workshop_namespace) }}
 
   syncPolicy:
     automated:

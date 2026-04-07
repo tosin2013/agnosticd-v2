@@ -36,7 +36,45 @@ ocp4_workload_capacity_planning_workshop_rhacm_thanos_secret_key: ""  # Will be 
 # Showroom configuration
 ocp4_workload_capacity_planning_workshop_showroom_terminal_image: quay.io/rhpds/openshift-showroom-terminal-ocp:latest
 
+# Multi-user configuration
+ocp4_workload_capacity_planning_workshop_num_users: "{{ num_users | default(0) }}"
+ocp4_workload_capacity_planning_workshop_user_basename: user
+ocp4_workload_capacity_planning_workshop_multiuser: >-
+  {{ ocp4_workload_capacity_planning_workshop_num_users | int > 0 }}
+
+# OpenShift Virtualization (CNV) for SNO VMs
+ocp4_workload_capacity_planning_workshop_deploy_virtualization: "{{ ocp4_workload_capacity_planning_workshop_multiuser }}"
+ocp4_workload_capacity_planning_workshop_virtualization_channel: stable
+ocp4_workload_capacity_planning_workshop_virtualization_namespace: openshift-cnv
+
+# SNO VM configuration (per user)
+ocp4_workload_capacity_planning_workshop_sno_vcpu: 8
+ocp4_workload_capacity_planning_workshop_sno_memory: 16Gi
+ocp4_workload_capacity_planning_workshop_sno_disk_size: 120Gi
+ocp4_workload_capacity_planning_workshop_sno_storage_class: ocs-external-storagecluster-ceph-rbd
+
+# SNO cluster configuration
+ocp4_workload_capacity_planning_workshop_sno_openshift_version: "4.19.0"
+ocp4_workload_capacity_planning_workshop_sno_base_domain: "{{ cluster_domain | default('apps.cluster.example.com') }}"
+
+# ClusterPool configuration for SNO VMs
+ocp4_workload_capacity_planning_workshop_clusterpool_name: sno-workshop-pool
+ocp4_workload_capacity_planning_workshop_clusterpool_namespace: sno-workshop-pool
+
+# Resource limits and capacity planning
+# With OpenShift Virtualization, each SNO VM requires:
+# - 8 vCPU + virtualization overhead (~10% = 8.8 vCPU effective)
+# - 16GB RAM + KubeVirt overhead (~2GB = 18GB effective)
+# - 120GB storage
+#
+# Hub cluster capacity (3 workers × 16 cores, 28GB allocatable):
+# - Max theoretical: 5 SNO VMs (48 cores ÷ 9.6 = 5)
+# - Recommended max: 3 SNO VMs (leaves headroom for hub services)
+# - MVP: 1 SNO VM (validate workflow)
+ocp4_workload_capacity_planning_workshop_max_users: 3
+
 # Auto-injected variables from AgnosticD (documented for reference)
 # guid: unique identifier for deployment
 # cluster_domain: OpenShift cluster domain (apps subdomain)
 # cluster_api_url: OpenShift API endpoint
+# num_users: number of workshop seats (from RHDP catalog)

@@ -35,8 +35,15 @@
       GUID: {{ guid }}
       Cluster Domain: {{ openshift_cluster_ingress_domain | default('N/A') }}
 
+      Mode: {{ 'Multi-User (' ~ ocp4_workload_capacity_planning_workshop_num_users ~ ' users)' if ocp4_workload_capacity_planning_workshop_multiuser else 'Single-User' }}
+      {% if ocp4_workload_capacity_planning_workshop_multiuser %}
+      Architecture: SNO VMs via OpenShift Virtualization
+      SNO Resources: {{ ocp4_workload_capacity_planning_workshop_sno_vcpu }} vCPU, {{ ocp4_workload_capacity_planning_workshop_sno_memory }} RAM
+      {% endif %}
+
       Components:
       - RHACM: {{ ocp4_workload_capacity_planning_workshop_deploy_rhacm }}
+      - OpenShift Virtualization: {{ ocp4_workload_capacity_planning_workshop_deploy_virtualization }}
       - Monitoring Config: {{ ocp4_workload_capacity_planning_workshop_deploy_monitoring }}
       - Sample Apps: {{ ocp4_workload_capacity_planning_workshop_deploy_sample_apps }}
       - Simulation Toolkit: {{ ocp4_workload_capacity_planning_workshop_deploy_simulation }}
@@ -54,6 +61,21 @@
     name: agnosticd.core_workloads.ocp4_workload_rhacm
   vars:
     ocp4_workload_rhacm_acm_channel: "{{ ocp4_workload_capacity_planning_workshop_rhacm_channel }}"
+
+# Step 1b: Install OpenShift Virtualization (for multi-user SNO VMs)
+- name: Install OpenShift Virtualization
+  when: ocp4_workload_capacity_planning_workshop_deploy_virtualization | bool
+  ansible.builtin.include_tasks: install_virtualization.yml
+
+# Step 1c: Provision SNO VMs via Hive + KubeVirt (multi-user mode)
+- name: Provision SNO VMs for multi-user workshop
+  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
+  ansible.builtin.include_tasks: provision_sno_vms.yml
+
+# Step 1d: Claim SNO clusters from pool (multi-user mode)
+- name: Claim SNO clusters for workshop users
+  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
+  ansible.builtin.include_tasks: claim_sno_clusters.yml
 
 # Step 2: Get NooBaa S3 credentials for Thanos
 - name: Get NooBaa admin secret
@@ -179,8 +201,9 @@
     - r_mco.resources[0].status.conditions is defined
     - r_mco.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | list | first == 'True'
 
-# Step 3: Create workshop namespace
-- name: Create workshop namespace
+# Step 3: Create workshop namespace (single-user mode on hub cluster)
+- name: Create workshop namespace on hub cluster
+  when: not ocp4_workload_capacity_planning_workshop_multiuser | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -193,12 +216,19 @@
           demo.redhat.com/guid: "{{ guid }}"
 
 # Step 4: Deploy workshop components via ArgoCD
-- name: Deploy workshop via ArgoCD Application
+# Single-user mode: Deploy to hub cluster
+- name: Deploy workshop via ArgoCD to hub cluster (single-user)
+  when: not ocp4_workload_capacity_planning_workshop_multiuser | bool
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('template', 'argocd-application.yaml.j2') }}"
+  vars:
+    _showroom_namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+    _target_cluster: "https://kubernetes.default.svc"
+    _user: ""
 
-- name: Wait for ArgoCD Application to sync
+- name: Wait for ArgoCD Application to sync (single-user)
+  when: not ocp4_workload_capacity_planning_workshop_multiuser | bool
   kubernetes.core.k8s_info:
     api_version: argoproj.io/v1alpha1
     kind: Application
@@ -213,8 +243,86 @@
     - r_argocd_app.resources[0].status is defined
     - r_argocd_app.resources[0].status.sync.status == "Synced"
 
-- name: Wait for sample applications to be ready
-  when: ocp4_workload_capacity_planning_workshop_deploy_sample_apps | bool
+# Multi-user mode: Deploy to SNO clusters
+- name: Register SNO clusters as ArgoCD remote clusters
+  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+    _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
+    _sno_kubeconfig: "{{ r_sno_kubeconfigs.results[_n].resources[0].data.kubeconfig | b64decode }}"
+    _sno_api_url: "{{ r_managed_clusters.results[_n].resources[0].spec.managedClusterClientConfigs[0].url }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ guid }}-{{ _user }}-cluster"
+        namespace: openshift-gitops
+        labels:
+          argocd.argoproj.io/secret-type: cluster
+      type: Opaque
+      stringData:
+        name: "{{ guid }}-{{ _user }}"
+        server: "{{ _sno_api_url }}"
+        config: |
+          {
+            "bearerToken": "",
+            "tlsClientConfig": {
+              "insecure": false,
+              "caData": ""
+            }
+          }
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Deploy workshop via ArgoCD to SNO clusters (multi-user)
+  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+    _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
+    _showroom_namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+    _target_cluster: "{{ r_managed_clusters.results[_n].resources[0].spec.managedClusterClientConfigs[0].url }}"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'argocd-application.yaml.j2') }}"
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Wait for ArgoCD Applications to sync on SNO clusters (multi-user)
+  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+    _app_name: "capacity-planning-workshop-{{ _user }}"
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: "{{ _app_name }}"
+    namespace: openshift-gitops
+  register: r_argocd_apps_multi
+  retries: 60
+  delay: 10
+  until:
+    - r_argocd_apps_multi.resources is defined
+    - r_argocd_apps_multi.resources | length > 0
+    - r_argocd_apps_multi.resources[0].status is defined
+    - r_argocd_apps_multi.resources[0].status.sync.status == "Synced"
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Wait for sample applications to be ready (single-user)
+  when:
+    - ocp4_workload_capacity_planning_workshop_deploy_sample_apps | bool
+    - not ocp4_workload_capacity_planning_workshop_multiuser | bool
   kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
