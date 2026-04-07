@@ -73,11 +73,10 @@
   ansible.builtin.include_tasks: provision_sno_vms.yml
 
 # Step 1d: Claim SNO clusters from pool (multi-user mode)
-# NOTE: Disabled - we use direct VM provisioning via provision_sno_vms.yml
-#       VMs will auto-register with ClusterPool via agentBareMetal platform
-# - name: Claim SNO clusters for workshop users
-#   when: ocp4_workload_capacity_planning_workshop_multiuser | bool
-#   ansible.builtin.include_tasks: claim_sno_clusters.yml
+# NOTE: ClusterClaim triggers ClusterDeployment creation, which Agent matches to start installation
+- name: Claim SNO clusters for workshop users
+  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
+  ansible.builtin.include_tasks: claim_sno_clusters.yml
 
 # Step 2: Get NooBaa S3 credentials for Thanos
 - name: Get NooBaa admin secret
