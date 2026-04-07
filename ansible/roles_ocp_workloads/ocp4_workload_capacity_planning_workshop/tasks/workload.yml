@@ -246,53 +246,56 @@
     - r_argocd_app.resources[0].status.sync.status == "Synced"
 
 # Multi-user mode: Deploy to SNO clusters
-- name: Register SNO clusters as ArgoCD remote clusters
-  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
-  vars:
-    _user_number: "{{ _n | int + 1 }}"
-    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
-    _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
-    _sno_kubeconfig: "{{ r_sno_kubeconfigs.results[_n].resources[0].data.kubeconfig | b64decode }}"
-    _sno_api_url: "{{ r_managed_clusters.results[_n].resources[0].spec.managedClusterClientConfigs[0].url }}"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: "{{ guid }}-{{ _user }}-cluster"
-        namespace: openshift-gitops
-        labels:
-          argocd.argoproj.io/secret-type: cluster
-      type: Opaque
-      stringData:
-        name: "{{ guid }}-{{ _user }}"
-        server: "{{ _sno_api_url }}"
-        config: |
-          {
-            "bearerToken": "",
-            "tlsClientConfig": {
-              "insecure": false,
-              "caData": ""
-            }
-          }
-  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
-  loop_control:
-    loop_var: _n
-    label: "{{ _user }}"
+# NOTE: Disabled - SNO clusters haven't installed OpenShift yet (takes 30-45 min)
+#       This task should run AFTER SNO installation completes
+# - name: Register SNO clusters as ArgoCD remote clusters
+#   when: ocp4_workload_capacity_planning_workshop_multiuser | bool
+#   vars:
+#     _user_number: "{{ _n | int + 1 }}"
+#     _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+#     _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
+#     _sno_kubeconfig: "{{ r_sno_kubeconfigs.results[_n].resources[0].data.kubeconfig | b64decode }}"
+#     _sno_api_url: "{{ r_managed_clusters.results[_n].resources[0].spec.managedClusterClientConfigs[0].url }}"
+#   kubernetes.core.k8s:
+#     state: present
+#     definition:
+#       apiVersion: v1
+#       kind: Secret
+#       metadata:
+#         name: "{{ guid }}-{{ _user }}-cluster"
+#         namespace: openshift-gitops
+#         labels:
+#           argocd.argoproj.io/secret-type: cluster
+#       type: Opaque
+#       stringData:
+#         name: "{{ guid }}-{{ _user }}"
+#         server: "{{ _sno_api_url }}"
+#         config: |
+#           {
+#             "bearerToken": "",
+#             "tlsClientConfig": {
+#               "insecure": false,
+#               "caData": ""
+#             }
+#           }
+#   loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+#   loop_control:
+#     loop_var: _n
+#     label: "{{ _user }}"
 
-- name: Deploy workshop via ArgoCD to SNO clusters (multi-user)
-  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
-  vars:
-    _user_number: "{{ _n | int + 1 }}"
-    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
-    _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
-    _showroom_namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
-    _target_cluster: "{{ r_managed_clusters.results[_n].resources[0].spec.managedClusterClientConfigs[0].url }}"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'argocd-application.yaml.j2') }}"
-  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+# NOTE: Disabled - SNO clusters haven't installed yet, will enable post-installation
+# - name: Deploy workshop via ArgoCD to SNO clusters (multi-user)
+#   when: ocp4_workload_capacity_planning_workshop_multiuser | bool
+#   vars:
+#     _user_number: "{{ _n | int + 1 }}"
+#     _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+#     _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
+#     _showroom_namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+#     _target_cluster: "{{ r_managed_clusters.results[_n].resources[0].spec.managedClusterClientConfigs[0].url }}"
+#   kubernetes.core.k8s:
+#     state: present
+#     definition: "{{ lookup('template', 'argocd-application.yaml.j2') }}"
+#   loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
   loop_control:
     loop_var: _n
     label: "{{ _user }}"
