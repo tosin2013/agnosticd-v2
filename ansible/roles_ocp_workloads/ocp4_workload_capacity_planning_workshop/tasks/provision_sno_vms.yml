@@ -332,30 +332,6 @@
 # Create KubeVirt VMs for SNO clusters
 # ============================================================
 
-- name: Create Immediate-binding StorageClass for ISO import
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: storage.k8s.io/v1
-      kind: StorageClass
-      metadata:
-        name: ocs-external-immediate
-      provisioner: openshift-storage.rbd.csi.ceph.com
-      parameters:
-        clusterID: openshift-storage
-        pool: ocpv-tenants
-        imageFeatures: layering
-        csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
-        csi.storage.k8s.io/provisioner-secret-namespace: openshift-storage
-        csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
-        csi.storage.k8s.io/controller-expand-secret-namespace: openshift-storage
-        csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
-        csi.storage.k8s.io/node-stage-secret-namespace: openshift-storage
-        csi.storage.k8s.io/fstype: ext4
-      reclaimPolicy: Delete
-      allowVolumeExpansion: true
-      volumeBindingMode: Immediate
-
 - name: Create PVC for InfraEnv ISO using CDI import
   kubernetes.core.k8s:
     state: present
@@ -375,7 +351,7 @@
         resources:
           requests:
             storage: 2Gi
-        storageClassName: ocs-external-immediate
+        storageClassName: ocs-external-storagecluster-ceph-rbd-immediate
 
 - name: Wait for InfraEnv ISO import to complete
   kubernetes.core.k8s_info:
