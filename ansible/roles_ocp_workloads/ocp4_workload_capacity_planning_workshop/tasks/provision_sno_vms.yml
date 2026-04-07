@@ -289,9 +289,8 @@
           guid: "{{ guid }}"
           networkType: dhcp
       spec:
-        clusterRef:
-          name: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_name }}"
-          namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        # No clusterRef - this is a standalone InfraEnv for ClusterPool provisioning
+        # Agents will be matched to ClusterDeployments via agentSelector labels
         pullSecretRef:
           name: pull-secret
         sshAuthorizedKey: "{{ r_ssh_pubkey.content | b64decode }}"
