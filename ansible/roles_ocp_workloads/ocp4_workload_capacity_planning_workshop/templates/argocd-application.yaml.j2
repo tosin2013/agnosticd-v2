@@ -25,8 +25,6 @@ spec:
         components:
           rhacm:
             enabled: false  # RHACM deployed via AgnosticD workload role instead
-              retentionResolutionRaw: 7d
-              retentionLocal: 7d
 
           monitoringConfig:
             enabled: {{ ocp4_workload_capacity_planning_workshop_deploy_monitoring | bool | lower }}
