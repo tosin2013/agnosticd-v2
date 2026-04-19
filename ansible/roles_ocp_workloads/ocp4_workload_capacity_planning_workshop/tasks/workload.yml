@@ -475,6 +475,107 @@
     loop_var: item
     label: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
 
+- name: "[HUB] Create ClusterRole: workshop-managedcluster-view"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  # The rbac-query-proxy enforces RHACM RBAC on Thanos queries by checking
+  # SubjectAccessReviews against managedclusters.  Without get/list on this
+  # resource, the proxy injects cluster=~"()" — matching nothing — and all
+  # Grafana panels show empty.  This minimal ClusterRole gives students just
+  # enough access to see the clusters they are allowed to query.
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: workshop-managedcluster-view
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      rules:
+        - apiGroups:
+            - cluster.open-cluster-management.io
+          resources:
+            - managedclusters
+          verbs:
+            - get
+            - list
+            - watch
+
+- name: "[HUB] Per-student CRBs: workshop-managedcluster-view"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "workshop-mcluster-view-{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: workshop-managedcluster-view
+      subjects:
+        - kind: User
+          apiGroup: rbac.authorization.k8s.io
+          name: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+  loop: "{{ range(1, ocp4_workload_capacity_planning_workshop_max_users | int + 1) | list }}"
+  loop_control:
+    loop_var: item
+    label: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+
+# ============================================================
+# HUB PATH — Pre-create RHACM observability custom allowlist
+# ============================================================
+# The observability allowlist is an admin/operator responsibility.
+# Students read and verify it in Module 5; they do not create it.
+# This ConfigMap is the union of all metrics needed across every workshop
+# module.  MCO auto-detects it and merges the entries into the
+# metrics-collector --match args within ~2 minutes of creation.
+#
+# Why each group is here:
+#   names/kube_pod_start_time          → Module 2 dashboard panels 1 & 2
+#   names/kube_deployment_*            → Module 2 panel 3, Module 5 scale view
+#   names/kube_horizontalpodauto*      → Module 5 HPA monitoring
+#   matches/kube_pod_.*                → Modules 2–6 pod-level ksm metrics
+#   matches/container_cpu_cfs_throttled → Module 3 throttling analysis
+#
+- name: "[HUB] Pre-create observability-metrics-custom-allowlist for all workshop modules"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: observability-metrics-custom-allowlist
+        namespace: open-cluster-management-observability
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      data:
+        metrics_list.yaml: |
+          names:
+            # Module 2 — pod velocity dashboard (panels 1 & 2)
+            - kube_pod_start_time
+
+            # Module 2 panel 3 + Module 5 deployment scale view
+            - kube_deployment_spec_replicas
+            - kube_deployment_status_replicas_available
+            - kube_deployment_created
+
+            # Module 5 — HPA monitoring panels
+            - kube_horizontalpodautoscaler_spec_target_metric
+            - kube_horizontalpodautoscaler_status_current_replicas
+            - kube_horizontalpodautoscaler_status_desired_replicas
+
+          matches:
+            # All pod-level kube-state-metrics — Modules 2, 3, 5, 6
+            - __name__=~"kube_pod_.*"
+
+            # CPU throttling — Module 3 right-sizing analysis
+            - __name__="container_cpu_cfs_throttled_seconds_total"
+
 # ============================================================
 # Post-workload: Print summary
 # ============================================================
