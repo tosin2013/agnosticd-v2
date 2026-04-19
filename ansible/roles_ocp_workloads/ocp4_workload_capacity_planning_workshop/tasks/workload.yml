@@ -1,8 +1,11 @@
 ---
 # Deploy Capacity Planning Workshop
+# Hub-Student topology split:
+#   hub_mode: true  → RHACM + Observability only (hub cluster)
+#   hub_mode: false → Sample apps + monitoring + simulation (student cluster)
 
 # ============================================================
-# Pre-workload validation
+# Pre-workload validation (both hub and student)
 # ============================================================
 
 - name: Validate OpenShift GitOps is installed
@@ -16,8 +19,8 @@
   delay: 10
   until: r_gitops_csv.resources | length > 0
 
-- name: Validate storage class exists (for RHACM observability)
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+- name: Validate storage class exists for RHACM Observability (hub only)
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s_info:
     api_version: storage.k8s.io/v1
     kind: StorageClass
@@ -31,65 +34,66 @@
       ============================================================
       Deploying Strategic Capacity Planning & Forecasting Workshop
       ============================================================
-      Namespace: {{ ocp4_workload_capacity_planning_workshop_namespace }}
-      GUID: {{ guid }}
-      Cluster Domain: {{ openshift_cluster_ingress_domain | default('N/A') }}
+      Mode:             {{ 'HUB (RHACM + Observability)' if ocp4_workload_capacity_planning_workshop_hub_mode | bool else 'STUDENT (apps + monitoring + simulation)' }}
+      GUID:             {{ guid }}
+      Cluster Domain:   {{ openshift_cluster_ingress_domain | default('N/A') }}
 
-      Mode: {{ 'Multi-User (' ~ ocp4_workload_capacity_planning_workshop_num_users ~ ' users)' if ocp4_workload_capacity_planning_workshop_multiuser else 'Single-User' }}
-      {% if ocp4_workload_capacity_planning_workshop_multiuser %}
-      Architecture: SNO VMs via OpenShift Virtualization
-      SNO Resources: {{ ocp4_workload_capacity_planning_workshop_sno_vcpu }} vCPU, {{ ocp4_workload_capacity_planning_workshop_sno_memory }} RAM
+      {% if ocp4_workload_capacity_planning_workshop_hub_mode | bool %}
+      Hub components to deploy:
+        - RHACM + MultiClusterHub
+        - RHACM Observability (Thanos → S3, Grafana fleet view)
+      Thanos storage class: {{ ocp4_workload_capacity_planning_workshop_rhacm_storage_class }}
+      Thanos S3 bucket:     {{ ocp4_workload_capacity_planning_workshop_rhacm_thanos_bucket }}
+      {% else %}
+      Student components to deploy:
+        - Workshop namespace + ArgoCD Application
+        - Sample Apps (QoS demos, HPA, load-gen, noisy-neighbor)
+        - Monitoring config (Prometheus rules, PromQL dashboards)
+        - Simulation toolkit
+      Hub RHACM URL (for Module 5 import): {{ ocp4_workload_capacity_planning_workshop_hub_rhacm_url | default('not set — inject post-hub-provision') }}
       {% endif %}
-
-      Components:
-      - RHACM: {{ ocp4_workload_capacity_planning_workshop_deploy_rhacm }}
-      - OpenShift Virtualization: {{ ocp4_workload_capacity_planning_workshop_deploy_virtualization }}
-      - Monitoring Config: {{ ocp4_workload_capacity_planning_workshop_deploy_monitoring }}
-      - Sample Apps: {{ ocp4_workload_capacity_planning_workshop_deploy_sample_apps }}
-      - Simulation Toolkit: {{ ocp4_workload_capacity_planning_workshop_deploy_simulation }}
-      - Showroom: {{ ocp4_workload_capacity_planning_workshop_deploy_showroom }}
       ============================================================
 
 # ============================================================
-# Main deployment
+# HUB PATH — RHACM + Observability
 # ============================================================
 
-# Step 1: Deploy RHACM using AgnosticD core_workloads role
-- name: Deploy RHACM operator and MultiClusterHub
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+# Step H-1: Deploy RHACM operator and MultiClusterHub
+- name: "[HUB] Deploy RHACM operator and MultiClusterHub"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   ansible.builtin.include_role:
     name: agnosticd.core_workloads.ocp4_workload_rhacm
   vars:
     ocp4_workload_rhacm_acm_channel: "{{ ocp4_workload_capacity_planning_workshop_rhacm_channel }}"
 
-# Step 1b: Install OpenShift Virtualization (for multi-user SNO VMs)
-- name: Install OpenShift Virtualization
-  when: ocp4_workload_capacity_planning_workshop_deploy_virtualization | bool
-  ansible.builtin.include_tasks: install_virtualization.yml
-
-# Step 1c: Provision SNO VMs via Hive + KubeVirt (multi-user mode)
-- name: Provision SNO VMs for multi-user workshop
-  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
-  ansible.builtin.include_tasks: provision_sno_vms.yml
-
-# Step 1d: Claim SNO clusters from pool (multi-user mode)
-# NOTE: ClusterClaim triggers ClusterDeployment creation, which Agent matches to start installation
-- name: Claim SNO clusters for workshop users
-  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
-  ansible.builtin.include_tasks: claim_sno_clusters.yml
-
-# Step 2: Get NooBaa S3 credentials for Thanos
-- name: Get NooBaa admin secret
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+# Step H-2: Detect storage backend for Thanos
+# Supports NooBaa/OCS (on-prem) and AWS native S3 (hub-student topology)
+- name: "[HUB] Check if NooBaa is available (OCS storage detection)"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
     name: noobaa-admin
     namespace: openshift-storage
   register: r_noobaa_secret
+  ignore_errors: true
 
-- name: Get NooBaa S3 route
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+- name: "[HUB] Set storage backend fact"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.set_fact:
+    _rhacm_use_noobaa: >-
+      {{ r_noobaa_secret.resources is defined and r_noobaa_secret.resources | length > 0 }}
+
+- name: "[HUB] Display detected Thanos storage backend"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.debug:
+    msg: "RHACM Thanos backend: {{ 'NooBaa/OCS' if _rhacm_use_noobaa else 'AWS S3 (native)' }}"
+
+# Step H-2a: NooBaa path — OCS/on-prem credentials
+- name: "[HUB] Get NooBaa S3 route"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - _rhacm_use_noobaa | bool
   kubernetes.core.k8s_info:
     api_version: route.openshift.io/v1
     kind: Route
@@ -97,16 +101,20 @@
     namespace: openshift-storage
   register: r_s3_route
 
-- name: Set NooBaa credentials
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+- name: "[HUB] Set NooBaa Thanos credentials"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - _rhacm_use_noobaa | bool
   ansible.builtin.set_fact:
-    noobaa_access_key: "{{ r_noobaa_secret.resources[0].data.AWS_ACCESS_KEY_ID | b64decode }}"
-    noobaa_secret_key: "{{ r_noobaa_secret.resources[0].data.AWS_SECRET_ACCESS_KEY | b64decode }}"
-    noobaa_endpoint: "{{ r_s3_route.resources[0].spec.host }}"
+    _thanos_access_key: "{{ r_noobaa_secret.resources[0].data.AWS_ACCESS_KEY_ID | b64decode }}"
+    _thanos_secret_key: "{{ r_noobaa_secret.resources[0].data.AWS_SECRET_ACCESS_KEY | b64decode }}"
+    _thanos_endpoint: "{{ r_s3_route.resources[0].spec.host }}"
+    _thanos_insecure: false
 
-# Step 3: Create OBC for RHACM metrics
-- name: Create ObjectBucketClaim for RHACM metrics
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+- name: "[HUB] Create ObjectBucketClaim for RHACM metrics (NooBaa)"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - _rhacm_use_noobaa | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -119,8 +127,10 @@
         generateBucketName: rhacm-metrics
         storageClassName: openshift-storage.noobaa.io
 
-- name: Wait for ObjectBucketClaim to be bound
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+- name: "[HUB] Wait for ObjectBucketClaim to be bound (NooBaa)"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - _rhacm_use_noobaa | bool
   kubernetes.core.k8s_info:
     api_version: objectbucket.io/v1alpha1
     kind: ObjectBucketClaim
@@ -136,14 +146,40 @@
     - r_obc.resources[0].status.phase is defined
     - r_obc.resources[0].status.phase == "Bound"
 
-- name: Get bucket name from OBC
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+- name: "[HUB] Set Thanos bucket name from OBC (NooBaa auto-generates)"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - _rhacm_use_noobaa | bool
   ansible.builtin.set_fact:
-    rhacm_bucket_name: "{{ r_obc.resources[0].spec.bucketName }}"
+    _thanos_bucket: "{{ r_obc.resources[0].spec.bucketName }}"
 
-# Step 4: Configure RHACM Observability
-- name: Create Thanos object storage secret
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+# Step H-2b: AWS S3 path — native credentials from secrets
+- name: "[HUB] Ensure S3 bucket exists for RHACM Thanos (AWS native)"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - not (_rhacm_use_noobaa | bool)
+  amazon.aws.s3_bucket:
+    name: "{{ ocp4_workload_capacity_planning_workshop_rhacm_thanos_bucket }}"
+    region: "{{ aws_region | default('us-east-2') }}"
+    state: present
+    access_key: "{{ aws_access_key_id | default(lookup('env', 'AWS_ACCESS_KEY_ID')) }}"
+    secret_key: "{{ aws_secret_access_key | default(lookup('env', 'AWS_SECRET_ACCESS_KEY')) }}"
+  ignore_errors: true
+
+- name: "[HUB] Set AWS S3 Thanos credentials"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - not (_rhacm_use_noobaa | bool)
+  ansible.builtin.set_fact:
+    _thanos_bucket: "{{ ocp4_workload_capacity_planning_workshop_rhacm_thanos_bucket }}"
+    _thanos_access_key: "{{ aws_access_key_id | default(lookup('env', 'AWS_ACCESS_KEY_ID')) }}"
+    _thanos_secret_key: "{{ aws_secret_access_key | default(lookup('env', 'AWS_SECRET_ACCESS_KEY')) }}"
+    _thanos_endpoint: "s3.{{ aws_region | default('us-east-2') }}.amazonaws.com"
+    _thanos_insecure: false
+
+# Step H-3: Deploy MultiClusterObservability
+- name: "[HUB] Create Thanos object storage secret"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -151,20 +187,20 @@
       kind: Secret
       metadata:
         name: thanos-object-storage
-        namespace: open-cluster-management
+        namespace: open-cluster-management-observability
       type: Opaque
       stringData:
         thanos.yaml: |
           type: s3
           config:
-            bucket: "{{ rhacm_bucket_name }}"
-            endpoint: "{{ noobaa_endpoint }}"
-            insecure: false
-            access_key: "{{ noobaa_access_key }}"
-            secret_key: "{{ noobaa_secret_key }}"
+            bucket: "{{ _thanos_bucket }}"
+            endpoint: "{{ _thanos_endpoint }}"
+            insecure: {{ _thanos_insecure | bool }}
+            access_key: "{{ _thanos_access_key }}"
+            secret_key: "{{ _thanos_secret_key }}"
 
-- name: Deploy RHACM MultiClusterObservability
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+- name: "[HUB] Deploy RHACM MultiClusterObservability"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -185,8 +221,8 @@
             retentionInLocal: "{{ ocp4_workload_capacity_planning_workshop_rhacm_retention_local }}"
             retentionResolutionRaw: "{{ ocp4_workload_capacity_planning_workshop_rhacm_retention_resolution }}"
 
-- name: Wait for RHACM Observability to be ready
-  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+- name: "[HUB] Wait for MultiClusterObservability to be ready"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s_info:
     api_version: observability.open-cluster-management.io/v1beta2
     kind: MultiClusterObservability
@@ -200,11 +236,75 @@
     - r_mco.resources | length > 0
     - r_mco.resources[0].status is defined
     - r_mco.resources[0].status.conditions is defined
-    - r_mco.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | list | first == 'True'
+    - r_mco.resources[0].status.conditions | length > 0
+    - >-
+      r_mco.resources[0].status.conditions
+      | selectattr('type', 'equalto', 'Ready')
+      | map(attribute='status')
+      | list | length > 0
+      and
+      (r_mco.resources[0].status.conditions
+      | selectattr('type', 'equalto', 'Ready')
+      | map(attribute='status')
+      | list | first) == 'True'
 
-# Step 3: Create workshop namespace (single-user mode on hub cluster)
-- name: Create workshop namespace on hub cluster
-  when: not ocp4_workload_capacity_planning_workshop_multiuser | bool
+# Step H-4: Get hub URLs for export
+# RHACM 2.13+ uses a console plugin (no standalone multicloud-console route).
+# The ACM UI is available at the OpenShift console /multicloud path.
+- name: "[HUB] Get Grafana Observability route"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: grafana
+    namespace: open-cluster-management-observability
+  register: r_grafana_route
+  retries: 30
+  delay: 10
+  until:
+    - r_grafana_route.resources is defined
+    - r_grafana_route.resources | length > 0
+
+- name: "[HUB] Set hub URL facts"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.set_fact:
+    # openshift_console_url already contains the full correct URL (no double-apps prefix)
+    # RHACM multicloud UI lives under /multicloud on the OCP console in RHACM 2.x+
+    _hub_rhacm_console: "{{ openshift_console_url | default('') }}/multicloud"
+    _hub_grafana_url: >-
+      https://{{ r_grafana_route.resources[0].spec.host
+        if r_grafana_route.resources | length > 0
+        else 'grafana-open-cluster-management-observability.' ~ openshift_cluster_ingress_domain | default('') }}
+
+# ============================================================
+# STUDENT PATH — Sample apps + monitoring + simulation
+# ============================================================
+
+# Step S-0: Ensure ArgoCD application controller has cluster-admin
+# The ocp4_workload_openshift_gitops role grants cluster-admin to the gitops SA,
+# but the ArgoCD application-controller SA also needs it to deploy cluster-scoped
+# resources (PriorityClasses, etc.) across arbitrary namespaces.
+- name: "[STUDENT] Grant cluster-admin to ArgoCD application controller"
+  when: not ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: argocd-application-controller-cluster-admin
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: cluster-admin
+      subjects:
+        - kind: ServiceAccount
+          name: openshift-gitops-argocd-application-controller
+          namespace: openshift-gitops
+
+# Step S-1: Create workshop namespace
+- name: "[STUDENT] Create workshop namespace"
+  when: not ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -216,10 +316,9 @@
           demo.redhat.com/application: capacity-workshop
           demo.redhat.com/guid: "{{ guid }}"
 
-# Step 4: Deploy workshop components via ArgoCD
-# Single-user mode: Deploy to hub cluster
-- name: Deploy workshop via ArgoCD to hub cluster (single-user)
-  when: not ocp4_workload_capacity_planning_workshop_multiuser | bool
+# Step S-2: Deploy workshop components via ArgoCD
+- name: "[STUDENT] Deploy workshop via ArgoCD Application"
+  when: not ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('template', 'argocd-application.yaml.j2') }}"
@@ -228,8 +327,8 @@
     _target_cluster: "https://kubernetes.default.svc"
     _user: ""
 
-- name: Wait for ArgoCD Application to sync (single-user)
-  when: not ocp4_workload_capacity_planning_workshop_multiuser | bool
+- name: "[STUDENT] Wait for ArgoCD Application to sync"
+  when: not ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s_info:
     api_version: argoproj.io/v1alpha1
     kind: Application
@@ -244,89 +343,11 @@
     - r_argocd_app.resources[0].status is defined
     - r_argocd_app.resources[0].status.sync.status == "Synced"
 
-# Multi-user mode: Deploy to SNO clusters
-# NOTE: Disabled - SNO clusters haven't installed OpenShift yet (takes 30-45 min)
-#       This task should run AFTER SNO installation completes
-# - name: Register SNO clusters as ArgoCD remote clusters
-#   when: ocp4_workload_capacity_planning_workshop_multiuser | bool
-#   vars:
-#     _user_number: "{{ _n | int + 1 }}"
-#     _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
-#     _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
-#     _sno_kubeconfig: "{{ r_sno_kubeconfigs.results[_n].resources[0].data.kubeconfig | b64decode }}"
-#     _sno_api_url: "{{ r_managed_clusters.results[_n].resources[0].spec.managedClusterClientConfigs[0].url }}"
-#   kubernetes.core.k8s:
-#     state: present
-#     definition:
-#       apiVersion: v1
-#       kind: Secret
-#       metadata:
-#         name: "{{ guid }}-{{ _user }}-cluster"
-#         namespace: openshift-gitops
-#         labels:
-#           argocd.argoproj.io/secret-type: cluster
-#       type: Opaque
-#       stringData:
-#         name: "{{ guid }}-{{ _user }}"
-#         server: "{{ _sno_api_url }}"
-#         config: |
-#           {
-#             "bearerToken": "",
-#             "tlsClientConfig": {
-#               "insecure": false,
-#               "caData": ""
-#             }
-#           }
-#   loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
-#   loop_control:
-#     loop_var: _n
-#     label: "{{ _user }}"
-
-# NOTE: Disabled - SNO clusters haven't installed yet, will enable post-installation
-# - name: Deploy workshop via ArgoCD to SNO clusters (multi-user)
-#   when: ocp4_workload_capacity_planning_workshop_multiuser | bool
-#   vars:
-#     _user_number: "{{ _n | int + 1 }}"
-#     _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
-#     _sno_namespace: "{{ r_cluster_claims.results[_n].resources[0].spec.namespace }}"
-#     _showroom_namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
-#     _target_cluster: "{{ r_managed_clusters.results[_n].resources[0].spec.managedClusterClientConfigs[0].url }}"
-#   kubernetes.core.k8s:
-#     state: present
-#     definition: "{{ lookup('template', 'argocd-application.yaml.j2') }}"
-#   loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
-  loop_control:
-    loop_var: _n
-    label: "{{ _user }}"
-
-- name: Wait for ArgoCD Applications to sync on SNO clusters (multi-user)
-  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
-  vars:
-    _user_number: "{{ _n | int + 1 }}"
-    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
-    _app_name: "capacity-planning-workshop-{{ _user }}"
-  kubernetes.core.k8s_info:
-    api_version: argoproj.io/v1alpha1
-    kind: Application
-    name: "{{ _app_name }}"
-    namespace: openshift-gitops
-  register: r_argocd_apps_multi
-  retries: 60
-  delay: 10
-  until:
-    - r_argocd_apps_multi.resources is defined
-    - r_argocd_apps_multi.resources | length > 0
-    - r_argocd_apps_multi.resources[0].status is defined
-    - r_argocd_apps_multi.resources[0].status.sync.status == "Synced"
-  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
-  loop_control:
-    loop_var: _n
-    label: "{{ _user }}"
-
-- name: Wait for sample applications to be ready (single-user)
+# Step S-3: Wait for sample applications
+- name: "[STUDENT] Wait for sample applications to be ready"
   when:
+    - not ocp4_workload_capacity_planning_workshop_hub_mode | bool
     - ocp4_workload_capacity_planning_workshop_deploy_sample_apps | bool
-    - not ocp4_workload_capacity_planning_workshop_multiuser | bool
   kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
@@ -344,113 +365,227 @@
       | selectattr('spec.replicas', 'defined')
       | selectattr('spec.replicas', 'gt', 0)
       | selectattr('status.availableReplicas', 'defined')
-      | list
-      | length
+      | list | length
       ==
       r_sample_apps.resources
       | selectattr('spec.replicas', 'defined')
       | selectattr('spec.replicas', 'gt', 0)
-      | list
-      | length
+      | list | length
 
-# ============================================================
-# Post-workload configuration
-# ============================================================
-
-- name: Get Showroom route URL
-  when: ocp4_workload_capacity_planning_workshop_deploy_showroom | bool
+# Step S-4: Get student cluster Prometheus route
+- name: "[STUDENT] Get Thanos querier route (student cluster Prometheus)"
+  when: not ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s_info:
     api_version: route.openshift.io/v1
     kind: Route
-    name: showroom
-    namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
-  register: r_showroom_route
-  retries: 30
-  delay: 10
-  until:
-    - r_showroom_route.resources is defined
-    - r_showroom_route.resources | length > 0
+    name: thanos-querier
+    namespace: openshift-monitoring
+  register: r_thanos_querier
+  retries: 10
+  delay: 5
+  ignore_errors: true
 
-- name: Set showroom URL fact
-  when:
-    - ocp4_workload_capacity_planning_workshop_deploy_showroom | bool
-    - r_showroom_route.resources | length > 0
-  ansible.builtin.set_fact:
-    showroom_url: "https://{{ r_showroom_route.resources[0].spec.host }}"
+# ============================================================
+# HUB PATH — Per-student htpasswd users for Grafana access
+# ============================================================
+# RHACM Observability Grafana uses oauth-proxy with auth.proxy mode and
+# viewers_can_edit=true, so any authenticated OCP user can both view AND
+# create/edit dashboards.  We create one htpasswd user per student slot
+# (student-01 … student-N) with a shared password, and bind them to
+# open-cluster-management:view which satisfies the oauth-proxy SAR gate
+# ({resource: projects, verb: list}).
 
-- name: Create userinfo ConfigMap with workshop access details
-  when: ocp4_workload_capacity_planning_workshop_deploy_showroom | bool
+- name: "[HUB] Build htpasswd file content for student users"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      HTPASSWD_FILE=$(mktemp)
+      for i in $(seq -w 1 {{ ocp4_workload_capacity_planning_workshop_max_users | int }}); do
+        USERNAME="{{ ocp4_workload_capacity_planning_workshop_user_basename }}-${i}"
+        htpasswd -bBn "${USERNAME}" "{{ ocp4_workload_capacity_planning_workshop_hub_password }}" >> "${HTPASSWD_FILE}"
+      done
+      cat "${HTPASSWD_FILE}"
+      rm -f "${HTPASSWD_FILE}"
+  register: r_htpasswd_content
+  changed_when: true
+
+- name: "[HUB] Create htpasswd secret for student users in openshift-config"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
-      kind: ConfigMap
+      kind: Secret
       metadata:
-        name: userinfo
-        namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
-        labels:
-          demo.redhat.com/userinfo: "true"
-      data:
-        workshop_url: "{{ showroom_url | default('') }}"
-        cluster_domain: "{{ openshift_cluster_ingress_domain | default('') }}"
-        namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
-        guid: "{{ guid }}"
-        rhacm_console: "https://multicloud-console.apps.{{ openshift_cluster_ingress_domain | default('') }}"
-        grafana_url: "https://grafana-open-cluster-management-observability.apps.{{ openshift_cluster_ingress_domain | default('') }}"
+        name: workshop-students-htpasswd
+        namespace: openshift-config
+      type: Opaque
+      stringData:
+        htpasswd: "{{ r_htpasswd_content.stdout }}"
 
-- name: Print workshop access information
+- name: "[HUB] Patch cluster OAuth to add workshop htpasswd identity provider"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  kubernetes.core.k8s:
+    state: present
+    merge_type: merge
+    definition:
+      apiVersion: config.openshift.io/v1
+      kind: OAuth
+      metadata:
+        name: cluster
+      spec:
+        identityProviders:
+          - name: workshop-students
+            mappingMethod: claim
+            type: HTPasswd
+            htpasswd:
+              fileData:
+                name: workshop-students-htpasswd
+
+- name: "[HUB] Wait for OAuth operator to reconcile after IDP change"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.pause:
+    seconds: 30
+
+- name: "[HUB] Create per-student ClusterRoleBindings for open-cluster-management:view-aggregate"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  # open-cluster-management:view-aggregate satisfies the grafana-proxy SAR gate
+  # (list projects).  viewers_can_edit=true in grafana.ini means these users can
+  # also create and edit Grafana dashboards without needing a higher OCP role.
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "workshop-grafana-view-{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: open-cluster-management:view-aggregate
+      subjects:
+        - kind: User
+          apiGroup: rbac.authorization.k8s.io
+          name: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+  loop: "{{ range(1, ocp4_workload_capacity_planning_workshop_max_users | int + 1) | list }}"
+  loop_control:
+    loop_var: item
+    label: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+
+# ============================================================
+# Post-workload: Print summary
+# ============================================================
+
+- name: "[HUB] Print hub deployment summary"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   ansible.builtin.debug:
     msg: |
       ============================================================
-      Workshop deployed successfully!
+      Hub cluster deployed successfully!
       ============================================================
-
-      Access the lab guide at:
-      {{ showroom_url | default('Showroom URL pending...') }}
-
       RHACM Console:
-      https://multicloud-console.apps.{{ openshift_cluster_ingress_domain | default('N/A') }}
+        {{ _hub_rhacm_console | default('https://multicloud-console.apps.' ~ openshift_cluster_ingress_domain | default('')) }}
 
-      Grafana (Observability):
-      https://grafana-open-cluster-management-observability.apps.{{ openshift_cluster_ingress_domain | default('N/A') }}
+      Grafana (Fleet Observability):
+        {{ _hub_grafana_url | default('https://grafana-open-cluster-management-observability.apps.' ~ openshift_cluster_ingress_domain | default('')) }}
 
-      Namespace: {{ ocp4_workload_capacity_planning_workshop_namespace }}
-      GUID: {{ guid }}
+      Next steps:
+        1. Record the hub_rhacm_url above
+        2. Provision student clusters:
+             agd provision --guid student-01 --config student-compact-aws --account sandbox5388
+        3. Module 5 — students navigate to the RHACM console and import their cluster
+      ============================================================
+
+- name: "[STUDENT] Print student deployment summary"
+  when: not ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      Student cluster {{ guid }} deployed successfully!
+      ============================================================
+      Cluster API:     {{ openshift_api_url | default('') }}
+      Console URL:     {{ openshift_console_url | default('') }}
+      Namespace:       {{ ocp4_workload_capacity_planning_workshop_namespace }}
+
+      Hub RHACM URL (Module 5 import target):
+        {{ ocp4_workload_capacity_planning_workshop_hub_rhacm_url | default('not set — see hub user-info.yaml') }}
+
+      Students open the RHACM console on the hub and import this cluster
+      via the UI during Module 5 ("The God's-Eye Dashboard").
       ============================================================
 
 # ============================================================
-# Export user info for RHDP catalog
+# Export user info for RHDP catalog / Showroom wiring
 # ============================================================
 
-- name: Export workshop access information to agnosticd_user_info
-  when: ocp4_workload_capacity_planning_workshop_deploy_showroom | bool
+- name: "[HUB] Export hub RHACM, Grafana URLs, and student credentials to agnosticd_user_info"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   agnosticd.core.agnosticd_user_info:
     msg: |
-      Capacity Planning Workshop has been deployed successfully.
+      Hub cluster deployed. RHACM and Grafana are ready for student cluster imports.
 
-      Access your lab guide at: {{ showroom_url | default('Showroom URL not available') }}
+      RHACM Console:   {{ _hub_rhacm_console | default('') }}
+      Grafana:         {{ _hub_grafana_url | default('') }}
+      Hub API:         {{ openshift_api_url | default('') }}
+
+      Student Grafana login (per-student username, shared password):
+        Username pattern: {{ ocp4_workload_capacity_planning_workshop_user_basename }}-NN
+        Password:         {{ ocp4_workload_capacity_planning_workshop_hub_password }}
+
+      Use the RHACM console URL when provisioning student clusters:
+        ocp4_workload_capacity_planning_workshop_hub_rhacm_url: "{{ _hub_rhacm_console | default('') }}"
+        ocp4_workload_capacity_planning_workshop_hub_api_url:   "{{ openshift_api_url | default('') }}"
+        ocp4_workload_capacity_planning_workshop_hub_password:  "{{ ocp4_workload_capacity_planning_workshop_hub_password }}"
     data:
-      showroom_url: "{{ showroom_url | default('') }}"
-      workshop_url: "{{ showroom_url | default('') }}"
+      hub_rhacm_console: "{{ _hub_rhacm_console | default('') }}"
+      hub_rhacm_url: "{{ _hub_rhacm_console | default('') }}"
+      hub_grafana_url: "{{ _hub_grafana_url | default('') }}"
+      hub_api_url: "{{ openshift_api_url | default('') }}"
+      hub_password: "{{ ocp4_workload_capacity_planning_workshop_hub_password }}"
+      openshift_console_url: "{{ openshift_console_url | default('') }}"
+      openshift_api_url: "{{ openshift_api_url | default('') }}"
+      cluster_ingress_domain: "{{ openshift_cluster_ingress_domain | default('') }}"
+      guid: "{{ guid }}"
+
+- name: "[STUDENT] Export student cluster credentials to agnosticd_user_info"
+  when: not ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  agnosticd.core.agnosticd_user_info:
+    msg: |
+      Student cluster {{ guid }} workshop deployment complete.
+
+      Cluster API:     {{ openshift_api_url | default('') }}
+      Console URL:     {{ openshift_console_url | default('') }}
+      Namespace:       {{ ocp4_workload_capacity_planning_workshop_namespace }}
+
+      SSH to your student cluster bastion (Showroom terminal):
+        ssh lab-user@bastion.{{ guid }}.{{ base_domain | default('') }}
+
+      Hub cluster access (Modules 2 + 5):
+        oc login {{ ocp4_workload_capacity_planning_workshop_hub_api_url | default('') }} \
+          --username={{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ guid }} \
+          --password={{ ocp4_workload_capacity_planning_workshop_hub_password | default('') }}
+
+      Module 5 — student imports this cluster into hub RHACM via the console.
+    data:
+      student_cluster_api_url: "{{ openshift_api_url | default('') }}"
+      student_cluster_console_url: "{{ openshift_console_url | default('') }}"
+      student_cluster_ingress_domain: "{{ openshift_cluster_ingress_domain | default('') }}"
+      student_cluster_guid: "{{ guid }}"
+      # Bastion SSH hostname — students connect here from the Showroom terminal
+      # Format: bastion.<guid>.<base_domain>  e.g. bastion.student-01.sandbox5388.opentlc.com
+      student_cluster_bastion: "bastion.{{ guid }}.{{ base_domain | default('') }}"
       openshift_console_url: "{{ openshift_console_url | default('') }}"
       openshift_api_url: "{{ openshift_api_url | default('') }}"
       cluster_ingress_domain: "{{ openshift_cluster_ingress_domain | default('') }}"
       namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
       guid: "{{ guid }}"
-      rhacm_console: "https://multicloud-console.apps.{{ openshift_cluster_ingress_domain | default('') }}"
-      grafana_url: "https://grafana-open-cluster-management-observability.apps.{{ openshift_cluster_ingress_domain | default('') }}"
-
-- name: Export workshop access information when Showroom is disabled
-  when: not (ocp4_workload_capacity_planning_workshop_deploy_showroom | bool)
-  agnosticd.core.agnosticd_user_info:
-    msg: |
-      Capacity Planning Workshop has been deployed successfully.
-      Showroom lab guide was not deployed.
-    data:
-      openshift_console_url: "{{ openshift_console_url | default('') }}"
-      openshift_api_url: "{{ openshift_api_url | default('') }}"
-      cluster_ingress_domain: "{{ openshift_cluster_ingress_domain | default('') }}"
-      namespace: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
-      guid: "{{ guid }}"
-      rhacm_console: "https://multicloud-console.apps.{{ openshift_cluster_ingress_domain | default('') }}"
-      grafana_url: "https://grafana-open-cluster-management-observability.apps.{{ openshift_cluster_ingress_domain | default('') }}"
+      hub_rhacm_url: "{{ ocp4_workload_capacity_planning_workshop_hub_rhacm_url | default('') }}"
+      # Hub cluster credentials — students use these to oc login to the hub
+      # for Modules 2 (ACM dashboard) and 5 (RHACM fleet observability).
+      # Username is per-student: student-<guid> (e.g. student-student-01)
+      hub_api_url: "{{ ocp4_workload_capacity_planning_workshop_hub_api_url | default('') }}"
+      hub_username: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ guid }}"
+      hub_password: "{{ ocp4_workload_capacity_planning_workshop_hub_password | default('') }}"
