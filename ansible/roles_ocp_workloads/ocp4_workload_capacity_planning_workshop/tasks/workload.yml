@@ -385,6 +385,15 @@
   delay: 5
   ignore_errors: true
 
+# Step S-5: Register this cluster with hub RHACM and grant hub Grafana RBAC
+# Both tasks run only when hub_api_url is provided, making the hub integration
+# optional (skipped for standalone student deployments without a hub).
+- name: "[STUDENT] Import cluster into hub RHACM and wire Grafana access"
+  when:
+    - not ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - ocp4_workload_capacity_planning_workshop_hub_api_url | default('') | length > 0
+  ansible.builtin.include_tasks: import_to_rhacm.yml
+
 # ============================================================
 # HUB PATH — Per-student htpasswd users for Grafana access
 # ============================================================
@@ -453,6 +462,10 @@
   # open-cluster-management:view-aggregate satisfies the grafana-proxy SAR gate
   # (list projects).  viewers_can_edit=true in grafana.ini means these users can
   # also create and edit Grafana dashboards without needing a higher OCP role.
+  #
+  # NOTE: This loop covers sequential htpasswd slot usernames (student-01 … student-N).
+  # The per-student GUID-based hub username (student-<guid>, e.g. student-student-01)
+  # is bound in the STUDENT workload path via import_to_rhacm.yml, where the guid is known.
   kubernetes.core.k8s:
     state: present
     definition:
@@ -501,8 +514,10 @@
             - list
             - watch
 
-- name: "[HUB] Per-student CRBs: workshop-managedcluster-view"
+- name: "[HUB] Per-student CRBs: workshop-managedcluster-view (sequential slot names)"
   when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  # Covers htpasswd slot names (student-01…student-N).
+  # GUID-based CRBs (student-student-01) are created in the STUDENT workload.
   kubernetes.core.k8s:
     state: present
     definition:
@@ -526,6 +541,86 @@
     label: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
 
 # ============================================================
+# HUB PATH — Deploy RHACM Dev Grafana for interactive dashboard building
+# ============================================================
+# The Dev Grafana instance gives students a full-editor Grafana UI backed by
+# the same Thanos datasource as production.  Students use it to explore and
+# optionally build their own dashboards.  The pre-generated module dashboards
+# (bundled in the lab guide examples) are applied by students with oc apply,
+# so Dev Grafana being available is a teaching tool, not a provisioning dependency.
+#
+# setup-grafana-dev.sh --deploy:
+#   - Clones the production Grafana Deployment/Service/Route/OAuthClient into
+#     -dev variants with a 1Gi PVC for its SQLite database
+#   - Removes ownerReferences so the MCO operator does not delete it
+#   - Prints "Grafana dev URL: <hostname>" when finished
+
+- name: "[HUB] Clone multicluster-observability-operator tools for Dev Grafana"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - ocp4_workload_capacity_planning_workshop_deploy_dev_grafana | bool
+  ansible.builtin.git:
+    repo: https://github.com/stolostron/multicluster-observability-operator.git
+    dest: /tmp/mco-tools
+    depth: 1
+    force: true
+
+- name: "[HUB] Deploy Dev Grafana instance"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - ocp4_workload_capacity_planning_workshop_deploy_dev_grafana | bool
+  ansible.builtin.shell:
+    cmd: bash setup-grafana-dev.sh --deploy
+    chdir: /tmp/mco-tools/tools
+  register: r_dev_grafana_deploy
+  changed_when: true
+
+- name: "[HUB] Show Dev Grafana deploy output"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - ocp4_workload_capacity_planning_workshop_deploy_dev_grafana | bool
+  ansible.builtin.debug:
+    msg: "{{ r_dev_grafana_deploy.stdout_lines }}"
+
+- name: "[HUB] Wait for grafana-dev pod to be ready"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - ocp4_workload_capacity_planning_workshop_deploy_dev_grafana | bool
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: grafana-dev
+    namespace: open-cluster-management-observability
+  register: r_grafana_dev
+  retries: 30
+  delay: 10
+  until:
+    - r_grafana_dev.resources is defined
+    - r_grafana_dev.resources | length > 0
+    - r_grafana_dev.resources[0].status is defined
+    - r_grafana_dev.resources[0].status.availableReplicas | default(0) | int >= 1
+
+- name: "[HUB] Get Dev Grafana route"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - ocp4_workload_capacity_planning_workshop_deploy_dev_grafana | bool
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: grafana-dev
+    namespace: open-cluster-management-observability
+  register: r_dev_grafana_route
+
+- name: "[HUB] Emit Dev Grafana URL to user_info"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - ocp4_workload_capacity_planning_workshop_deploy_dev_grafana | bool
+    - r_dev_grafana_route.resources | length > 0
+  agnosticd_user_info:
+    data:
+      hub_dev_grafana_url: "https://{{ r_dev_grafana_route.resources[0].spec.host }}"
+
+# ============================================================
 # HUB PATH — Pre-create RHACM observability custom allowlist
 # ============================================================
 # The observability allowlist is an admin/operator responsibility.
@@ -538,8 +633,11 @@
 #   names/kube_pod_start_time          → Module 2 dashboard panels 1 & 2
 #   names/kube_deployment_*            → Module 2 panel 3, Module 5 scale view
 #   names/kube_horizontalpodauto*      → Module 5 HPA monitoring
+#   names/kube_node_info               → Module 5 Panel 5 pod density (pods/node)
+#   names/etcd_mvcc_db_total_size_*    → Module 5 Panel 6 etcd DB size gauge
 #   matches/kube_pod_.*                → Modules 2–6 pod-level ksm metrics
 #   matches/container_cpu_cfs_throttled → Module 3 throttling analysis
+#   matches/container_cpu_usage_*      → Module 5 Panel 2B CPU usage vs requested
 #
 - name: "[HUB] Pre-create observability-metrics-custom-allowlist for all workshop modules"
   when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
@@ -569,12 +667,24 @@
             - kube_horizontalpodautoscaler_status_current_replicas
             - kube_horizontalpodautoscaler_status_desired_replicas
 
+            # Module 5 Panel 5 — pod density (pods/node denominator)
+            - kube_node_info
+
+            # Module 5 Panel 6 — etcd DB size gauge (warn at 6 GB, limit 8 GB)
+            # RHACM renames this to etcd_debugging_mvcc_db_total_size_in_bytes in Thanos
+            # (see renames in observability-metrics-allowlist). Grafana queries must use
+            # the etcd_debugging_* name, not the raw Prometheus name.
+            - etcd_mvcc_db_total_size_in_bytes
+
           matches:
             # All pod-level kube-state-metrics — Modules 2, 3, 5, 6
             - __name__=~"kube_pod_.*"
 
             # CPU throttling — Module 3 right-sizing analysis
             - __name__="container_cpu_cfs_throttled_seconds_total"
+
+            # Module 5 Panel 2B — actual CPU usage vs requested (fleet CPU gap)
+            - __name__="container_cpu_usage_seconds_total"
 
 # ============================================================
 # Post-workload: Print summary

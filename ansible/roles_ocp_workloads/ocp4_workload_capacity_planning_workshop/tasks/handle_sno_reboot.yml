@@ -1,0 +1,171 @@
+---
+# Handle SNO VM reboot after installation writes to disk
+# Agent-based installations require the VM to boot from installed disk, not InfraEnv ISO
+
+# ============================================================
+# Wait for Agent to request reboot
+# ============================================================
+
+- name: Wait for Agent to reach reboot stage
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+  kubernetes.core.k8s_info:
+    api_version: agent-install.openshift.io/v1beta1
+    kind: Agent
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+    label_selectors:
+      - workshop=capacity-planning
+      - guid={{ guid }}
+      - user={{ _user }}
+  register: r_agents_reboot
+  retries: 120
+  delay: 30
+  until:
+    - r_agents_reboot.resources is defined
+    - r_agents_reboot.resources | length > 0
+    - r_agents_reboot.resources[0].status is defined
+    - r_agents_reboot.resources[0].status.progress is defined
+    - r_agents_reboot.resources[0].status.progress.currentStage is defined
+    - r_agents_reboot.resources[0].status.progress.currentStage == "Rebooting" or
+      r_agents_reboot.resources[0].status.debugInfo.state == "installing-pending-user-action"
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Display reboot status
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      SNO VMs ready for reboot
+      ============================================================
+      {% for item in r_agents_reboot.results %}
+      {{ item.item | int + 1 }}. Agent {{ item.resources[0].metadata.name }}
+         Stage: {{ item.resources[0].status.progress.currentStage }}
+         State: {{ item.resources[0].status.debugInfo.state }}
+      {% endfor %}
+
+      Removing InfraEnv ISO and rebooting VMs to boot from installed disk...
+      ============================================================
+
+# ============================================================
+# Remove CD-ROM from VMs and reboot
+# ============================================================
+
+- name: Remove InfraEnv ISO from SNO VMs
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+    _vm_name: "sno-{{ guid }}-{{ _user }}"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ _vm_name }}"
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+    definition:
+      spec:
+        template:
+          spec:
+            domain:
+              devices:
+                disks:
+                  - name: rootdisk
+                    bootOrder: 1
+                    disk:
+                      bus: virtio
+                  - name: cloudinitdisk
+                    disk:
+                      bus: virtio
+            volumes:
+              - name: rootdisk
+                dataVolume:
+                  name: "{{ _vm_name }}-rootdisk"
+              - name: cloudinitdisk
+                cloudInitNoCloud:
+                  userData: |
+                    #cloud-config
+                    user: core
+                    password: workshop
+                    chpasswd: { expire: False }
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Restart SNO VMs to boot from disk
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+    _vm_name: "sno-{{ guid }}-{{ _user }}"
+  block:
+    - name: Stop VM
+      kubernetes.core.k8s:
+        state: patched
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ _vm_name }}"
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        definition:
+          spec:
+            running: false
+
+    - name: Wait for VM to stop
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: Start VM
+      kubernetes.core.k8s:
+        state: patched
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ _vm_name }}"
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        definition:
+          spec:
+            running: true
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Wait for Agents to reconnect after reboot
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+  kubernetes.core.k8s_info:
+    api_version: agent-install.openshift.io/v1beta1
+    kind: Agent
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+    label_selectors:
+      - workshop=capacity-planning
+      - guid={{ guid }}
+      - user={{ _user }}
+  register: r_agents_reconnect
+  retries: 30
+  delay: 20
+  until:
+    - r_agents_reconnect.resources is defined
+    - r_agents_reconnect.resources | length > 0
+    - r_agents_reconnect.resources[0].status is defined
+    - r_agents_reconnect.resources[0].status.debugInfo.state != "installing-pending-user-action"
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Display post-reboot status
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      SNO VMs rebooted successfully
+      ============================================================
+      {% for item in r_agents_reconnect.results %}
+      {{ item.item | int + 1 }}. Agent {{ item.resources[0].metadata.name }}
+         State: {{ item.resources[0].status.debugInfo.state }}
+         Stage: {{ item.resources[0].status.progress.currentStage | default('N/A') }}
+      {% endfor %}
+
+      Installation continuing...
+      ============================================================

@@ -17,6 +17,9 @@ ocp4_workload_capacity_planning_workshop_deploy_monitoring: true
 ocp4_workload_capacity_planning_workshop_deploy_sample_apps: true
 ocp4_workload_capacity_planning_workshop_deploy_simulation: true
 ocp4_workload_capacity_planning_workshop_deploy_showroom: true
+# Deploy the RHACM Dev Grafana instance on the hub for interactive dashboard building.
+# Requires kubeadmin access; the URL is emitted to agnosticd user_info as hub_dev_grafana_url.
+ocp4_workload_capacity_planning_workshop_deploy_dev_grafana: true
 
 # Node density configuration (disabled by default due to MachineConfig rollout)
 ocp4_workload_capacity_planning_workshop_enable_node_density: false
@@ -91,6 +94,12 @@ ocp4_workload_capacity_planning_workshop_hub_password: "openshift"
 # Managed cluster name used when registering this student cluster into hub RHACM.
 # Defaults to the deployment guid (e.g. student-01).
 ocp4_workload_capacity_planning_workshop_managed_cluster_name: "{{ guid }}"
+
+# Hub cluster kubeadmin password — required for the student workload to authenticate
+# to the hub for RHACM import and RBAC provisioning.
+# Set to the kubeadmin password from the hub agnosticd output.
+# Leave empty to skip hub integration (import_to_rhacm.yml will not run).
+ocp4_workload_capacity_planning_workshop_hub_kubeadmin_password: ""
 
 # Hub-Student topology capacity planning (AWS compact 3-node per student)
 # Each student cluster: 3 × m7a.2xlarge = 24 vCPU / 96 GB
