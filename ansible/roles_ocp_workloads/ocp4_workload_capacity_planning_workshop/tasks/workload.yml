@@ -616,7 +616,7 @@
     - ocp4_workload_capacity_planning_workshop_hub_mode | bool
     - ocp4_workload_capacity_planning_workshop_deploy_dev_grafana | bool
     - r_dev_grafana_route.resources | length > 0
-  agnosticd_user_info:
+  agnosticd.core.agnosticd_user_info:
     data:
       hub_dev_grafana_url: "https://{{ r_dev_grafana_route.resources[0].spec.host }}"
 
