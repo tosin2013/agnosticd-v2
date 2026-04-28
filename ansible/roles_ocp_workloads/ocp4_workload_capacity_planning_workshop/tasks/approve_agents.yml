@@ -1,0 +1,73 @@
+---
+# Auto-approve Agents discovered by SNO VMs
+# Agents must be approved before ClusterDeployment installation can proceed
+
+- name: Wait for Agents to be discovered by SNO VMs
+  kubernetes.core.k8s_info:
+    api_version: agent-install.openshift.io/v1beta1
+    kind: Agent
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+    label_selectors:
+      - workshop=capacity-planning
+      - guid={{ guid }}
+  register: r_agents
+  retries: 60
+  delay: 15
+  until:
+    - r_agents.resources is defined
+    - r_agents.resources | length == ocp4_workload_capacity_planning_workshop_num_users | int
+
+- name: Display discovered Agents
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      Discovered {{ r_agents.resources | length }} Agents
+      ============================================================
+      {% for agent in r_agents.resources %}
+      Agent {{ loop.index }}:
+        Name: {{ agent.metadata.name }}
+        Hostname: {{ agent.status.inventory.hostname | default('N/A') }}
+        Approved: {{ agent.spec.approved | default(false) }}
+        Role: {{ agent.spec.role | default('N/A') }}
+      {% endfor %}
+      ============================================================
+
+- name: Auto-approve discovered Agents
+  vars:
+    _agent_name: "{{ item.metadata.name }}"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: agent-install.openshift.io/v1beta1
+    kind: Agent
+    name: "{{ _agent_name }}"
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+    definition:
+      spec:
+        approved: true
+  loop: "{{ r_agents.resources }}"
+  loop_control:
+    label: "{{ _agent_name }}"
+  when: not (item.spec.approved | default(false))
+
+- name: Verify all Agents are approved
+  kubernetes.core.k8s_info:
+    api_version: agent-install.openshift.io/v1beta1
+    kind: Agent
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+    label_selectors:
+      - workshop=capacity-planning
+      - guid={{ guid }}
+  register: r_approved_agents
+
+- name: Display Agent approval status
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      Agent Approval Complete
+      ============================================================
+      Total Agents: {{ r_approved_agents.resources | length }}
+      Approved: {{ r_approved_agents.resources | selectattr('spec.approved', 'equalto', true) | list | length }}
+
+      SNO installation will begin automatically now.
+      Expected duration: 30-45 minutes per cluster
+      ============================================================

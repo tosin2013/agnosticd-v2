@@ -1,0 +1,86 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: capacity-planning-workshop{{ '-' ~ _user if _user is defined and _user else '' }}
+  namespace: openshift-gitops
+  labels:
+    demo.redhat.com/application: capacity-workshop
+    demo.redhat.com/guid: "{{ guid }}"
+{% if _user is defined and _user %}
+    demo.redhat.com/user: "{{ _user }}"
+{% endif %}
+spec:
+  project: default
+  source:
+    repoURL: "{{ ocp4_workload_capacity_planning_workshop_helm_repo }}"
+    targetRevision: "{{ ocp4_workload_capacity_planning_workshop_helm_branch }}"
+    path: .
+    helm:
+      values: |
+        global:
+          namespace: {{ _showroom_namespace | default(ocp4_workload_capacity_planning_workshop_namespace) }}
+          clusterDomain: {{ openshift_cluster_ingress_domain | default('apps.example.com') }}
+          guid: "{{ guid }}"
+{% if _user is defined and _user %}
+          user: "{{ _user }}"
+{% endif %}
+
+        deployer:
+          domain: {{ openshift_cluster_ingress_domain | default('apps.example.com') }}
+
+        components:
+          rhacm:
+            enabled: false  # RHACM deployed via AgnosticD workload role instead
+
+          monitoringConfig:
+            enabled: {{ ocp4_workload_capacity_planning_workshop_deploy_monitoring | bool | lower }}
+
+          sampleApps:
+            enabled: {{ ocp4_workload_capacity_planning_workshop_deploy_sample_apps | bool | lower }}
+            loadGenerator:
+              replicas: 1
+              targetRPS: 100
+
+          nodeDensityConfig:
+            enabled: {{ ocp4_workload_capacity_planning_workshop_enable_node_density | bool | lower }}
+            maxPods: {{ ocp4_workload_capacity_planning_workshop_max_pods }}
+
+          simulationToolkit:
+            enabled: {{ ocp4_workload_capacity_planning_workshop_deploy_simulation | bool | lower }}
+
+          showroom:
+            enabled: {{ ocp4_workload_capacity_planning_workshop_deploy_showroom | bool | lower }}
+            namespace: {{ _showroom_namespace | default(ocp4_workload_capacity_planning_workshop_namespace) }}
+            name: showroom
+            content:
+              repoUrl: {{ ocp4_workload_capacity_planning_workshop_content_repo }}
+              repoRef: {{ ocp4_workload_capacity_planning_workshop_content_branch }}
+              antoraPlaybook: "default-site.yml"
+              image: "quay.io/rhpds/showroom-content:v1.3.1"
+            terminal:
+              enabled: true
+              image: {{ ocp4_workload_capacity_planning_workshop_showroom_terminal_image }}
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "1000m"
+                  memory: "1Gi"
+
+  destination:
+    server: {{ _target_cluster | default('https://kubernetes.default.svc') }}
+    namespace: {{ _showroom_namespace | default(ocp4_workload_capacity_planning_workshop_namespace) }}
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

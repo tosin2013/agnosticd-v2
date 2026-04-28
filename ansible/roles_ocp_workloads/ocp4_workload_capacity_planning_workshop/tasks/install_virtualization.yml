@@ -1,0 +1,111 @@
+---
+# Install OpenShift Virtualization (CNV) for SNO VM provisioning
+# This is only executed when multi-user mode is enabled (num_users > 0)
+
+- name: Create OpenShift Virtualization namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ ocp4_workload_capacity_planning_workshop_virtualization_namespace }}"
+        labels:
+          openshift.io/cluster-monitoring: "true"
+
+- name: Create OperatorGroup for OpenShift Virtualization
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: kubevirt-hyperconverged-group
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_virtualization_namespace }}"
+      spec:
+        targetNamespaces:
+        - "{{ ocp4_workload_capacity_planning_workshop_virtualization_namespace }}"
+
+- name: Subscribe to OpenShift Virtualization operator
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: hco-operatorhub
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_virtualization_namespace }}"
+      spec:
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+        name: kubevirt-hyperconverged
+        channel: "{{ ocp4_workload_capacity_planning_workshop_virtualization_channel }}"
+        installPlanApproval: Automatic
+
+- name: Wait for OpenShift Virtualization CSV to be succeeded
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_virtualization_namespace }}"
+  register: r_cnv_csv
+  retries: 60
+  delay: 10
+  until:
+    - r_cnv_csv.resources is defined
+    - r_cnv_csv.resources | length > 0
+    - r_cnv_csv.resources | selectattr('spec.displayName', 'contains', 'OpenShift Virtualization') | list | length > 0
+    - r_cnv_csv.resources | selectattr('spec.displayName', 'contains', 'OpenShift Virtualization') | map(attribute='status.phase') | select('equalto', 'Succeeded') | list | length > 0
+
+- name: Deploy HyperConverged custom resource
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: hco.kubevirt.io/v1beta1
+      kind: HyperConverged
+      metadata:
+        name: kubevirt-hyperconverged
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_virtualization_namespace }}"
+      spec:
+        certConfig:
+          ca:
+            duration: 48h0m0s
+            renewBefore: 24h0m0s
+          server:
+            duration: 24h0m0s
+            renewBefore: 12h0m0s
+        featureGates:
+          deployTektonTaskResources: false
+          withHostPassthroughCPU: false
+          deployKubeSecondaryDNS: false
+          nonRoot: true
+          disableMDevConfiguration: false
+        liveMigrationConfig:
+          bandwidthPerMigration: 64Mi
+          completionTimeoutPerGiB: 800
+          parallelMigrationsPerCluster: 5
+          parallelOutboundMigrationsPerNode: 2
+          progressTimeout: 150
+        uninstallStrategy: BlockUninstallIfWorkloadsExist
+
+- name: Wait for HyperConverged to be available
+  kubernetes.core.k8s_info:
+    api_version: hco.kubevirt.io/v1beta1
+    kind: HyperConverged
+    name: kubevirt-hyperconverged
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_virtualization_namespace }}"
+  register: r_hyperconverged
+  retries: 60
+  delay: 15
+  until:
+    - r_hyperconverged.resources is defined
+    - r_hyperconverged.resources | length > 0
+    - r_hyperconverged.resources[0].status is defined
+    - r_hyperconverged.resources[0].status.conditions is defined
+    - r_hyperconverged.resources[0].status.conditions | selectattr('type', 'equalto', 'Available') | map(attribute='status') | select('equalto', 'True') | list | length > 0
+
+- name: Display OpenShift Virtualization installation status
+  ansible.builtin.debug:
+    msg: |
+      OpenShift Virtualization installation complete
+      Namespace: {{ ocp4_workload_capacity_planning_workshop_virtualization_namespace }}
+      Status: {{ r_hyperconverged.resources[0].status.conditions | selectattr('type', 'equalto', 'Available') | map(attribute='status') | first }}
