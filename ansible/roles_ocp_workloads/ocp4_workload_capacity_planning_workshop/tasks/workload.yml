@@ -370,6 +370,10 @@
     - r_argocd_app.resources[0].status.sync.status == "Synced"
 
 # Step S-3: Wait for sample applications
+# Cold-start note: on a fresh cluster all images must be pulled before pods become Available.
+# Image pull time varies by registry latency; 25 minutes covers the worst-case cold start.
+# The until condition requires at least one Deployment to exist (resources.length > 0) so
+# the task will keep retrying harmlessly if ArgoCD hasn't created the Deployments yet.
 - name: "[STUDENT] Wait for sample applications to be ready"
   when:
     - not ocp4_workload_capacity_planning_workshop_hub_mode | bool
@@ -381,8 +385,8 @@
     label_selectors:
       - demo.redhat.com/application=capacity-workshop
   register: r_sample_apps
-  retries: 30
-  delay: 10
+  retries: 100
+  delay: 15
   until:
     - r_sample_apps.resources is defined
     - r_sample_apps.resources | length > 0
