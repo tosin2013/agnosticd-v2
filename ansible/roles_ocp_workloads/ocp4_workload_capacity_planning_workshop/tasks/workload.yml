@@ -286,6 +286,22 @@
         if r_grafana_route.resources | length > 0
         else 'grafana-open-cluster-management-observability.' ~ openshift_cluster_ingress_domain | default('') }}
 
+# Step H-5: Deploy Showroom lab guide on hub
+- name: "[HUB] Deploy Showroom lab guide"
+  when:
+    - ocp4_workload_capacity_planning_workshop_hub_mode | bool
+    - ocp4_workload_capacity_planning_workshop_deploy_showroom | bool
+  ansible.builtin.include_role:
+    name: agnosticd.core_workloads.ocp4_workload_showroom
+  vars:
+    ocp4_workload_showroom_namespace: "showroom-{{ guid }}"
+    ocp4_workload_showroom_content_git_repo: "https://github.com/tosin2013/capacity-planning-lab-guide.git"
+    ocp4_workload_showroom_content_git_repo_ref: "main"
+    ocp4_workload_showroom_content_antora_playbook: "default-site.yml"
+    ocp4_workload_showroom_content_title: "Strategic Capacity Planning & Forecasting for OpenShift"
+    ocp4_workload_showroom_terminal_type: "wetty"
+    ocp4_workload_showroom_wetty_ssh_bastion_login: true
+
 # ============================================================
 # STUDENT PATH — Sample apps + monitoring + simulation
 # ============================================================
