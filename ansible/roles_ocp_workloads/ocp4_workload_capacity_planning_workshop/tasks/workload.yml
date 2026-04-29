@@ -178,6 +178,16 @@
     _thanos_insecure: false
 
 # Step H-3: Deploy MultiClusterObservability
+- name: "[HUB] Ensure open-cluster-management-observability namespace exists"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: open-cluster-management-observability
+
 - name: "[HUB] Create Thanos object storage secret"
   when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
   kubernetes.core.k8s:
