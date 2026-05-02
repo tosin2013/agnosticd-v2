@@ -493,9 +493,9 @@
   # (list projects).  viewers_can_edit=true in grafana.ini means these users can
   # also create and edit Grafana dashboards without needing a higher OCP role.
   #
-  # NOTE: This loop covers sequential htpasswd slot usernames (student-01 … student-N).
-  # The per-student GUID-based hub username (student-<guid>, e.g. student-student-01)
-  # is bound in the STUDENT workload path via import_to_rhacm.yml, where the guid is known.
+  # Subject name uses un-padded item (user-1, user-2 …) to match the actual
+  # HTPasswd username created by the hub workload.  The CRB name retains zero-padding
+  # for readability/sorting but the subject MUST match the login name exactly.
   kubernetes.core.k8s:
     state: present
     definition:
@@ -512,11 +512,11 @@
       subjects:
         - kind: User
           apiGroup: rbac.authorization.k8s.io
-          name: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+          name: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ item }}"
   loop: "{{ range(1, ocp4_workload_capacity_planning_workshop_max_users | int + 1) | list }}"
   loop_control:
     loop_var: item
-    label: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+    label: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ item }}"
 
 - name: "[HUB] Create ClusterRole: workshop-managedcluster-view"
   when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
@@ -564,11 +564,154 @@
       subjects:
         - kind: User
           apiGroup: rbac.authorization.k8s.io
-          name: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+          name: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ item }}"
   loop: "{{ range(1, ocp4_workload_capacity_planning_workshop_max_users | int + 1) | list }}"
   loop_control:
     loop_var: item
-    label: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+    label: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ item }}"
+
+- name: "[HUB] Bind Grafana SA to open-cluster-management:view-aggregate"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  # With auth.proxy + forwardHeaders in some RHACM versions the user bearer token
+  # is not reliably forwarded from Grafana to the rbac-query-proxy, so the proxy
+  # computes cluster=~"()" and dashboards show "No data".  Granting the Grafana SA
+  # cluster-view access lets the proxy resolve ManagedCluster names via the SA token.
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: workshop-grafana-sa-view-aggregate
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: open-cluster-management:view-aggregate
+      subjects:
+        - kind: ServiceAccount
+          name: grafana
+          namespace: open-cluster-management-observability
+
+- name: "[HUB] Bind Grafana SA to workshop-managedcluster-view"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: workshop-grafana-sa-managedcluster-view
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: workshop-managedcluster-view
+      subjects:
+        - kind: ServiceAccount
+          name: grafana
+          namespace: open-cluster-management-observability
+
+- name: "[HUB] Create Role: workshop-grafana-dashboard-editor in observability namespace"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  # Allows students to oc apply custom Grafana dashboard ConfigMaps (Module 2 lab).
+  # The role name workshop-grafana-dashboard-editor is referenced by the per-student
+  # RoleBindings below.  import_to_rhacm.yml also references grafana-dashboard-creator
+  # (legacy name) — that binding is harmless; this role covers the htpasswd slot usernames.
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: workshop-grafana-dashboard-editor
+        namespace: open-cluster-management-observability
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          verbs: ["get", "list", "create", "update", "patch", "delete"]
+
+- name: "[HUB] Per-student RoleBindings: workshop-grafana-dashboard-editor (sequential slot names)"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  # Binds user-1, user-2 … user-N (htpasswd slot names, no zero-padding) to the
+  # workshop-grafana-dashboard-editor Role so they can create/update Grafana dashboard
+  # ConfigMaps in the open-cluster-management-observability namespace (Module 2).
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: "workshop-grafana-dashboard-editor-{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ '%02d' | format(item) }}"
+        namespace: open-cluster-management-observability
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: workshop-grafana-dashboard-editor
+      subjects:
+        - kind: User
+          apiGroup: rbac.authorization.k8s.io
+          name: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ item }}"
+  loop: "{{ range(1, ocp4_workload_capacity_planning_workshop_max_users | int + 1) | list }}"
+  loop_control:
+    loop_var: item
+    label: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ item }}"
+
+- name: "[HUB] Collect managed cluster names for observability RBAC"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  kubernetes.core.k8s_info:
+    api_version: cluster.open-cluster-management.io/v1
+    kind: ManagedCluster
+  register: _hub_managed_clusters
+
+- name: "[HUB] Per-user RoleBindings: view ClusterRole in each managed cluster namespace"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  # RHACM observability rbac-query-proxy performs a namespace-scoped SubjectAccessReview
+  # against the managed cluster's namespace (e.g. student-01) on the hub to decide
+  # which cluster names to inject into the cluster=~"..." Prometheus filter.
+  # Without a RoleBinding in that namespace the filter stays cluster=~"()" and Grafana
+  # shows "No data" for all dashboards.
+  # Reference: https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.11/html/access_control/access-control#observability-RBAC
+  #
+  # item.0 = managed cluster namespace (e.g. student-01 or local-cluster)
+  # item.1 = user slot number (integer, 1-based)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: "workshop-obs-view-{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ item.1 }}"
+        namespace: "{{ item.0 }}"
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: view
+      subjects:
+        - kind: User
+          apiGroup: rbac.authorization.k8s.io
+          name: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ item.1 }}"
+  vars:
+    _obs_cluster_namespaces: >-
+      {{
+        _hub_managed_clusters.resources
+        | default([])
+        | map(attribute='metadata.name')
+        | list
+      }}
+    _obs_user_slots: "{{ range(1, ocp4_workload_capacity_planning_workshop_max_users | int + 1) | list }}"
+  loop: "{{ _obs_cluster_namespaces | product(_obs_user_slots) | list }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item.0 }}/{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ item.1 }}"
 
 # ============================================================
 # HUB PATH — Deploy RHACM Dev Grafana for interactive dashboard building
@@ -806,7 +949,9 @@
 
       Hub cluster access (Modules 2 + 5):
         oc login {{ ocp4_workload_capacity_planning_workshop_hub_api_url | default('') }} \
-          --username={{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ guid }} \
+          --username={{ ocp4_workload_capacity_planning_workshop_hub_user_slot
+                        if ocp4_workload_capacity_planning_workshop_hub_user_slot | default('') | length > 0
+                        else ocp4_workload_capacity_planning_workshop_user_basename ~ '-' ~ guid }} \
           --password={{ ocp4_workload_capacity_planning_workshop_hub_password | default('') }}
 
       Module 5 — student imports this cluster into hub RHACM via the console.
@@ -826,7 +971,11 @@
       hub_rhacm_url: "{{ ocp4_workload_capacity_planning_workshop_hub_rhacm_url | default('') }}"
       # Hub cluster credentials — students use these to oc login to the hub
       # for Modules 2 (ACM dashboard) and 5 (RHACM fleet observability).
-      # Username is per-student: student-<guid> (e.g. student-student-01)
+      # hub_user_slot takes precedence when set (matches hub htpasswd sequential user).
+      # Falls back to {user_basename}-{guid} when import_to_rhacm.yml wires the RBAC.
       hub_api_url: "{{ ocp4_workload_capacity_planning_workshop_hub_api_url | default('') }}"
-      hub_username: "{{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ guid }}"
+      hub_username: >-
+        {{ ocp4_workload_capacity_planning_workshop_hub_user_slot
+           if ocp4_workload_capacity_planning_workshop_hub_user_slot | default('') | length > 0
+           else ocp4_workload_capacity_planning_workshop_user_basename ~ '-' ~ guid }}
       hub_password: "{{ ocp4_workload_capacity_planning_workshop_hub_password | default('') }}"
