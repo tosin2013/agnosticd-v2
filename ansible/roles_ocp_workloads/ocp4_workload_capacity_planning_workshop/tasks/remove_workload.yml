@@ -1,0 +1,54 @@
+---
+# Remove Capacity Planning Workshop (idempotent cleanup)
+
+- name: Delete ArgoCD Application
+  kubernetes.core.k8s:
+    state: absent
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: capacity-planning-workshop
+    namespace: openshift-gitops
+  ignore_errors: true
+
+- name: Delete workshop namespace
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+  ignore_errors: true
+
+- name: Delete RHACM MultiClusterObservability
+  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+  kubernetes.core.k8s:
+    state: absent
+    api_version: observability.open-cluster-management.io/v1beta2
+    kind: MultiClusterObservability
+    name: observability
+    namespace: open-cluster-management
+  ignore_errors: true
+
+- name: Delete RHACM MultiClusterHub
+  when: ocp4_workload_capacity_planning_workshop_deploy_rhacm | bool
+  kubernetes.core.k8s:
+    state: absent
+    api_version: operator.open-cluster-management.io/v1
+    kind: MultiClusterHub
+    name: multiclusterhub
+    namespace: open-cluster-management
+  ignore_errors: true
+
+- name: Wait for namespace deletion to complete
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_capacity_planning_workshop_namespace }}"
+  register: r_namespace
+  retries: 60
+  delay: 5
+  until: r_namespace.resources | length == 0
+  ignore_errors: true
+
+- name: Print removal confirmation
+  ansible.builtin.debug:
+    msg: "Capacity Planning Workshop removed successfully"

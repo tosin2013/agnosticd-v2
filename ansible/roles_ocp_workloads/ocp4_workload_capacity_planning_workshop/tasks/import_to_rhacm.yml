@@ -1,0 +1,317 @@
+---
+# import_to_rhacm.yml
+# ============================================================
+# Register this student cluster as an RHACM Managed Cluster on
+# the hub and grant the student's hub Grafana RBAC.
+#
+# Called from workload.yml [STUDENT] Step S-5 when:
+#   ocp4_workload_capacity_planning_workshop_hub_api_url is set
+#
+# Prerequisites:
+#   ocp4_workload_capacity_planning_workshop_hub_api_url         — hub API URL
+#   ocp4_workload_capacity_planning_workshop_hub_kubeadmin_password — hub kubeadmin password
+#   ocp4_workload_capacity_planning_workshop_managed_cluster_name  — defaults to guid
+#   ocp4_workload_capacity_planning_workshop_user_basename         — defaults to "student"
+#
+# Flow:
+#   1. Authenticate to hub → get short-lived kubeadmin token
+#   2. Create Namespace + ManagedCluster + KlusterletAddonConfig on hub
+#   3. Wait for auto-generated import secret on hub
+#   4. Apply import YAML to this student cluster (connects klusterlet agent)
+#   5. Wait for ManagedCluster JOINED=True on hub
+#   6. Grant student's guid-based hub username the two Grafana CRBs
+# ============================================================
+
+- name: "[STUDENT→HUB] Skip if hub kubeadmin password not provided"
+  when: ocp4_workload_capacity_planning_workshop_hub_kubeadmin_password | default('') | length == 0
+  ansible.builtin.debug:
+    msg: >-
+      ocp4_workload_capacity_planning_workshop_hub_kubeadmin_password is not set.
+      Skipping RHACM import and hub Grafana RBAC.
+      Set this variable to the hub kubeadmin password to enable automated import.
+
+- name: "[STUDENT→HUB] End play block if hub password missing"
+  when: ocp4_workload_capacity_planning_workshop_hub_kubeadmin_password | default('') | length == 0
+  ansible.builtin.meta: end_host
+
+# ── Step 1: Authenticate to hub ──────────────────────────────────────────────
+
+- name: "[STUDENT→HUB] Authenticate to hub cluster as kubeadmin"
+  kubernetes.core.k8s_auth:
+    host: "{{ ocp4_workload_capacity_planning_workshop_hub_api_url }}"
+    username: kubeadmin
+    password: "{{ ocp4_workload_capacity_planning_workshop_hub_kubeadmin_password }}"
+    validate_certs: false
+  register: r_hub_auth
+  retries: 5
+  delay: 10
+  until: r_hub_auth.k8s_auth is defined
+
+- name: "[STUDENT→HUB] Set hub auth facts"
+  ansible.builtin.set_fact:
+    _hub_host: "{{ ocp4_workload_capacity_planning_workshop_hub_api_url }}"
+    _hub_token: "{{ r_hub_auth.k8s_auth.api_key }}"
+    _managed_cluster_name: "{{ ocp4_workload_capacity_planning_workshop_managed_cluster_name }}"
+    _hub_student_username: >-
+      {{ ocp4_workload_capacity_planning_workshop_user_basename }}-{{ guid }}
+
+# ── Step 2: Create Namespace + ManagedCluster + KlusterletAddonConfig on hub ─
+
+- name: "[STUDENT→HUB] Create namespace for managed cluster on hub"
+  kubernetes.core.k8s:
+    host: "{{ _hub_host }}"
+    api_key: "{{ _hub_token }}"
+    validate_certs: false
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ _managed_cluster_name }}"
+        labels:
+          cluster.open-cluster-management.io/managedCluster: "{{ _managed_cluster_name }}"
+
+- name: "[STUDENT→HUB] Create ManagedCluster resource on hub"
+  kubernetes.core.k8s:
+    host: "{{ _hub_host }}"
+    api_key: "{{ _hub_token }}"
+    validate_certs: false
+    state: present
+    definition:
+      apiVersion: cluster.open-cluster-management.io/v1
+      kind: ManagedCluster
+      metadata:
+        name: "{{ _managed_cluster_name }}"
+        labels:
+          cloud: Amazon
+          vendor: OpenShift
+          demo.redhat.com/application: capacity-workshop
+          demo.redhat.com/guid: "{{ guid }}"
+      spec:
+        hubAcceptsClient: true
+        leaseDurationSeconds: 60
+
+- name: "[STUDENT→HUB] Create KlusterletAddonConfig on hub"
+  kubernetes.core.k8s:
+    host: "{{ _hub_host }}"
+    api_key: "{{ _hub_token }}"
+    validate_certs: false
+    state: present
+    definition:
+      apiVersion: agent.open-cluster-management.io/v1
+      kind: KlusterletAddonConfig
+      metadata:
+        name: "{{ _managed_cluster_name }}"
+        namespace: "{{ _managed_cluster_name }}"
+      spec:
+        clusterName: "{{ _managed_cluster_name }}"
+        clusterNamespace: "{{ _managed_cluster_name }}"
+        clusterLabels:
+          cloud: Amazon
+          vendor: OpenShift
+        applicationManager:
+          enabled: false
+        certPolicyController:
+          enabled: false
+        iamPolicyController:
+          enabled: false
+        policyController:
+          enabled: false
+        searchCollector:
+          enabled: false
+        observabilityController:
+          enabled: true
+
+# ── Step 3: Wait for import secret ───────────────────────────────────────────
+
+- name: "[STUDENT→HUB] Wait for import secret to be generated on hub"
+  kubernetes.core.k8s_info:
+    host: "{{ _hub_host }}"
+    api_key: "{{ _hub_token }}"
+    validate_certs: false
+    api_version: v1
+    kind: Secret
+    name: "{{ _managed_cluster_name }}-import"
+    namespace: "{{ _managed_cluster_name }}"
+  register: r_import_secret
+  retries: 30
+  delay: 10
+  until:
+    - r_import_secret.resources is defined
+    - r_import_secret.resources | length > 0
+    - r_import_secret.resources[0].data is defined
+    - r_import_secret.resources[0].data['import.yaml'] is defined
+
+# ── Step 4: Apply CRDs then import YAML to student cluster ────────────────────
+# The import secret contains two keys:
+#   crds.yaml   — Klusterlet CRD (must be applied first)
+#   import.yaml — Klusterlet agent resources (applied after CRD is established)
+
+- name: "[STUDENT→HUB] Decode CRDs YAML"
+  ansible.builtin.set_fact:
+    _crds_yaml: "{{ r_import_secret.resources[0].data['crds.yaml'] | b64decode }}"
+    _import_yaml: "{{ r_import_secret.resources[0].data['import.yaml'] | b64decode }}"
+
+- name: "[STUDENT] Apply RHACM CRDs to student cluster (Klusterlet CRD)"
+  ansible.builtin.shell:
+    cmd: |
+      echo '{{ _crds_yaml | quote }}' | oc apply -f -
+  register: r_crds_apply
+  changed_when: "'created' in r_crds_apply.stdout or 'configured' in r_crds_apply.stdout"
+  retries: 3
+  delay: 10
+  until: r_crds_apply.rc == 0
+
+- name: "[STUDENT] Wait for Klusterlet CRD to be established"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: klusterlets.operator.open-cluster-management.io
+  register: r_klusterlet_crd
+  retries: 12
+  delay: 5
+  until:
+    - r_klusterlet_crd.resources is defined
+    - r_klusterlet_crd.resources | length > 0
+    - >-
+      r_klusterlet_crd.resources[0].status.conditions
+      | selectattr('type', 'equalto', 'Established')
+      | map(attribute='status') | list | first | default('False') == 'True'
+
+- name: "[STUDENT] Apply RHACM import YAML to student cluster"
+  ansible.builtin.shell:
+    cmd: |
+      echo '{{ _import_yaml | quote }}' | oc apply -f -
+  register: r_import_apply
+  changed_when: "'created' in r_import_apply.stdout or 'configured' in r_import_apply.stdout"
+  retries: 3
+  delay: 10
+  until: r_import_apply.rc == 0
+
+- name: "[STUDENT] Show import apply output"
+  ansible.builtin.debug:
+    msg: "{{ r_import_apply.stdout_lines }}"
+
+# ── Step 5: Wait for ManagedCluster to join ───────────────────────────────────
+
+- name: "[STUDENT→HUB] Wait for ManagedCluster to be JOINED and AVAILABLE"
+  kubernetes.core.k8s_info:
+    host: "{{ _hub_host }}"
+    api_key: "{{ _hub_token }}"
+    validate_certs: false
+    api_version: cluster.open-cluster-management.io/v1
+    kind: ManagedCluster
+    name: "{{ _managed_cluster_name }}"
+  register: r_managed_cluster
+  retries: 60
+  delay: 15
+  until:
+    - r_managed_cluster.resources is defined
+    - r_managed_cluster.resources | length > 0
+    - r_managed_cluster.resources[0].status is defined
+    - r_managed_cluster.resources[0].status.conditions is defined
+    - >-
+      r_managed_cluster.resources[0].status.conditions
+      | selectattr('type', 'equalto', 'ManagedClusterConditionAvailable')
+      | map(attribute='status') | list | first | default('False') == 'True'
+
+- name: "[STUDENT→HUB] ManagedCluster joined successfully"
+  ansible.builtin.debug:
+    msg: >-
+      Student cluster '{{ _managed_cluster_name }}' is now a managed cluster on the hub.
+      RHACM Observability will begin collecting metrics within ~5 minutes.
+
+# ── Step 6: Grant student hub Grafana RBAC (guid-based username) ──────────────
+# The hub RBAC loop in workload.yml (HUB path) creates CRBs for sequential slot
+# names (student-01…student-N).  The actual hub login username is {basename}-{guid}
+# (e.g. student-student-01).  We create the matching CRBs here, where the guid
+# is known from the student workload context.
+
+- name: "[STUDENT→HUB] Grant hub Grafana view CRB for student guid-based username"
+  kubernetes.core.k8s:
+    host: "{{ _hub_host }}"
+    api_key: "{{ _hub_token }}"
+    validate_certs: false
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "workshop-grafana-view-{{ _hub_student_username }}"
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: open-cluster-management:view-aggregate
+      subjects:
+        - kind: User
+          apiGroup: rbac.authorization.k8s.io
+          name: "{{ _hub_student_username }}"
+
+- name: "[STUDENT→HUB] Grant hub ManagedCluster view CRB for student guid-based username"
+  kubernetes.core.k8s:
+    host: "{{ _hub_host }}"
+    api_key: "{{ _hub_token }}"
+    validate_certs: false
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "workshop-mcluster-view-{{ _hub_student_username }}"
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: workshop-managedcluster-view
+      subjects:
+        - kind: User
+          apiGroup: rbac.authorization.k8s.io
+          name: "{{ _hub_student_username }}"
+
+- name: "[STUDENT→HUB] Grant ConfigMap create access in observability namespace"
+  # Allows student to run create-acm-dashboard.sh which provisions custom
+  # Grafana dashboards via ConfigMap (Module 2 lab).
+  # The Role workshop-grafana-dashboard-editor is created by the HUB workload path
+  # in workload.yml.  This binding covers the guid-based hub username
+  # (e.g. user-student-01) in addition to the slot-based bindings created by the
+  # HUB path (user-1, user-2 …).
+  kubernetes.core.k8s:
+    host: "{{ _hub_host }}"
+    api_key: "{{ _hub_token }}"
+    validate_certs: false
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: "workshop-grafana-dashboard-editor-{{ _hub_student_username }}"
+        namespace: open-cluster-management-observability
+        labels:
+          demo.redhat.com/application: capacity-workshop
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: workshop-grafana-dashboard-editor
+      subjects:
+        - kind: User
+          apiGroup: rbac.authorization.k8s.io
+          name: "{{ _hub_student_username }}"
+
+- name: "[STUDENT→HUB] Hub RBAC and RHACM import complete"
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      Hub integration complete for student cluster: {{ _managed_cluster_name }}
+      ============================================================
+      Hub username : {{ _hub_student_username }}
+      CRBs applied :
+        - workshop-grafana-view-{{ _hub_student_username }}
+        - workshop-mcluster-view-{{ _hub_student_username }}
+      RoleBinding  :
+        - grafana-dashboard-creator-{{ _hub_student_username }}
+          (namespace: open-cluster-management-observability)
+      Managed cluster registered: {{ _managed_cluster_name }}
+      ============================================================

@@ -1,0 +1,79 @@
+---
+# Create ClusterDeployment and AgentClusterInstall for each SNO VM
+# agentBareMetal ClusterPools don't auto-create clusters - we must create them manually
+
+- name: Create AgentClusterInstall for each user
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+    _cluster_name: "sno-{{ _user }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: extensions.hive.openshift.io/v1beta1
+      kind: AgentClusterInstall
+      metadata:
+        name: "{{ _cluster_name }}"
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        labels:
+          demo.redhat.com/guid: "{{ guid }}"
+          demo.redhat.com/user: "{{ _user }}"
+      spec:
+        clusterDeploymentRef:
+          name: "{{ _cluster_name }}"
+        imageSetRef:
+          name: "{{ sno_imageset_name }}"
+        networking:
+          clusterNetwork:
+          - cidr: 10.128.0.0/14
+            hostPrefix: 23
+          serviceNetwork:
+          - 172.30.0.0/16
+          machineNetwork:
+          - cidr: 192.168.126.0/24
+        provisionRequirements:
+          controlPlaneAgents: 1
+          workerAgents: 0
+        sshPublicKey: "{{ (r_ssh_pubkey.content | b64decode | trim) }}"
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Create ClusterDeployment for each user
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+    _cluster_name: "sno-{{ _user }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: hive.openshift.io/v1
+      kind: ClusterDeployment
+      metadata:
+        name: "{{ _cluster_name }}"
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        labels:
+          demo.redhat.com/guid: "{{ guid }}"
+          demo.redhat.com/user: "{{ _user }}"
+          workshop: capacity-planning
+      spec:
+        baseDomain: "{{ ocp4_workload_capacity_planning_workshop_sno_base_domain }}"
+        clusterName: "{{ _cluster_name }}"
+        platform:
+          agentBareMetal:
+            agentSelector:
+              matchLabels:
+                workshop: capacity-planning
+                guid: "{{ guid }}"
+        pullSecretRef:
+          name: pull-secret
+        clusterInstallRef:
+          group: extensions.hive.openshift.io
+          version: v1beta1
+          kind: AgentClusterInstall
+          name: "{{ _cluster_name }}"
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"

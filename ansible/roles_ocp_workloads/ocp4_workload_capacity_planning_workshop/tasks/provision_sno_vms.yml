@@ -1,0 +1,510 @@
+---
+# Provision SNO VMs via Hive AgentBareMetal platform
+# This creates a ClusterPool of SNO clusters running as VMs on OpenShift Virtualization
+
+# ============================================================
+# User count validation
+# ============================================================
+
+- name: Validate user count does not exceed maximum
+  when: ocp4_workload_capacity_planning_workshop_multiuser | bool
+  ansible.builtin.assert:
+    that:
+      - ocp4_workload_capacity_planning_workshop_num_users | int <= ocp4_workload_capacity_planning_workshop_max_users | int
+      - ocp4_workload_capacity_planning_workshop_num_users | int > 0
+    fail_msg: |
+      User count validation failed.
+      Requested: {{ ocp4_workload_capacity_planning_workshop_num_users }} users
+      Maximum: {{ ocp4_workload_capacity_planning_workshop_max_users }} users
+
+      Each SNO VM requires:
+      - {{ ocp4_workload_capacity_planning_workshop_sno_vcpu }} vCPU
+      - {{ ocp4_workload_capacity_planning_workshop_sno_memory }} RAM
+      - {{ ocp4_workload_capacity_planning_workshop_sno_disk_size }} storage
+
+      Hub cluster capacity may limit the number of concurrent SNO VMs.
+      Consider deploying fewer users or scaling up the hub cluster.
+
+# ============================================================
+# ClusterPool namespace and prerequisites
+# ============================================================
+
+- name: Create ClusterPool namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        labels:
+          demo.redhat.com/application: capacity-workshop
+          demo.redhat.com/guid: "{{ guid }}"
+
+- name: Get cluster pull secret from openshift-config
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: pull-secret
+    namespace: openshift-config
+  register: r_pull_secret
+
+- name: Create pull secret for SNO cluster installation
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: pull-secret
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+      type: kubernetes.io/dockerconfigjson
+      data:
+        .dockerconfigjson: "{{ r_pull_secret.resources[0].data['.dockerconfigjson'] }}"
+
+- name: Create SSH key for SNO cluster access
+  block:
+    - name: Generate SSH key pair
+      ansible.builtin.command:
+        cmd: ssh-keygen -t ed25519 -N '' -f /tmp/sno-ssh-key -C 'sno-workshop-key'
+        creates: /tmp/sno-ssh-key
+
+    - name: Read SSH public key
+      ansible.builtin.slurp:
+        src: /tmp/sno-ssh-key.pub
+      register: r_ssh_pubkey
+
+    - name: Create SSH key secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: sno-ssh-key
+            namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+          type: Opaque
+          stringData:
+            ssh-publickey: "{{ r_ssh_pubkey.content | b64decode }}"
+
+# ============================================================
+# ClusterImageSet for SNO version
+# ============================================================
+
+- name: Get available ClusterImageSet for SNO version
+  kubernetes.core.k8s_info:
+    api_version: hive.openshift.io/v1
+    kind: ClusterImageSet
+  register: r_imagesets
+
+- name: Find matching ClusterImageSet
+  ansible.builtin.set_fact:
+    sno_imageset_name: >-
+      {{ r_imagesets.resources
+         | selectattr('spec.releaseImage', 'contains', ocp4_workload_capacity_planning_workshop_sno_openshift_version)
+         | selectattr('metadata.name', 'contains', 'x86-64')
+         | map(attribute='metadata.name')
+         | first }}
+
+- name: Display selected ClusterImageSet
+  ansible.builtin.debug:
+    msg: "Using ClusterImageSet: {{ sno_imageset_name }}"
+
+# ============================================================
+# AgentServiceConfig for Agent-based installer
+# ============================================================
+
+- name: Create AgentServiceConfig for SNO provisioning
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: AgentServiceConfig
+      metadata:
+        name: agent
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+      spec:
+        databaseStorage:
+          storageClassName: "{{ ocp4_workload_capacity_planning_workshop_sno_storage_class }}"
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+        filesystemStorage:
+          storageClassName: "{{ ocp4_workload_capacity_planning_workshop_sno_storage_class }}"
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 20Gi
+        imageStorage:
+          storageClassName: "{{ ocp4_workload_capacity_planning_workshop_sno_storage_class }}"
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 50Gi
+
+- name: Wait for AgentServiceConfig to be ready
+  kubernetes.core.k8s_info:
+    api_version: agent-install.openshift.io/v1beta1
+    kind: AgentServiceConfig
+    name: agent
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+  register: r_agentconfig
+  retries: 30
+  delay: 10
+  until:
+    - r_agentconfig.resources is defined
+    - r_agentconfig.resources | length > 0
+    - r_agentconfig.resources[0].status is defined
+    - r_agentconfig.resources[0].status.conditions is defined
+    - r_agentconfig.resources[0].status.conditions | selectattr('type', 'equalto', 'ReconcileCompleted') | map(attribute='status') | select('equalto', 'True') | list | length > 0
+
+# ============================================================
+# Install config template for SNO clusters
+# ============================================================
+
+- name: Create install-config template secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: sno-install-config-template
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+      type: Opaque
+      stringData:
+        install-config.yaml: |
+          apiVersion: v1
+          baseDomain: {{ ocp4_workload_capacity_planning_workshop_sno_base_domain }}
+          metadata:
+            name: sno
+          networking:
+            networkType: OVNKubernetes
+            clusterNetwork:
+            - cidr: 10.128.0.0/14
+              hostPrefix: 23
+            serviceNetwork:
+            - 172.30.0.0/16
+            machineNetwork:
+            - cidr: 192.168.126.0/24
+          controlPlane:
+            name: master
+            replicas: 1
+            platform:
+              none: {}
+          compute:
+          - name: worker
+            replicas: 0
+          platform:
+            none: {}
+          pullSecret: ""
+          sshKey: ""
+
+# ============================================================
+# ClusterPool for SNO VMs
+# ============================================================
+
+- name: Create ClusterPool for SNO VMs
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: hive.openshift.io/v1
+      kind: ClusterPool
+      metadata:
+        name: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_name }}"
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        labels:
+          demo.redhat.com/application: capacity-workshop
+          demo.redhat.com/guid: "{{ guid }}"
+      spec:
+        baseDomain: "{{ ocp4_workload_capacity_planning_workshop_sno_base_domain }}"
+        imageSetRef:
+          name: "{{ sno_imageset_name }}"
+
+        # Pool size: create enough SNO clusters for workshop users
+        size: "{{ ocp4_workload_capacity_planning_workshop_num_users | int }}"
+        maxSize: "{{ ocp4_workload_capacity_planning_workshop_max_users | int }}"
+        maxConcurrent: 2
+
+        # Claim lifetime
+        claimLifetime:
+          default: 8h
+          maximum: 12h
+
+        # Labels for all claimed clusters
+        labels:
+          workshop: capacity-planning
+          guid: "{{ guid }}"
+          cluster-type: sno-vm
+
+        # Platform: agentBareMetal for VMs
+        platform:
+          agentBareMetal:
+            agentSelector:
+              matchLabels:
+                workshop: capacity-planning
+                guid: "{{ guid }}"
+
+        # Install config template
+        installConfigSecretTemplateRef:
+          name: sno-install-config-template
+
+        # Pull secret and SSH key
+        pullSecretRef:
+          name: pull-secret
+
+        installAttemptsLimit: 3
+
+        skipMachinePools: true
+
+- name: Display ClusterPool creation status
+  ansible.builtin.debug:
+    msg: |
+      ClusterPool created: {{ ocp4_workload_capacity_planning_workshop_clusterpool_name }}
+      Target size: {{ ocp4_workload_capacity_planning_workshop_num_users }} SNO VMs
+
+      NOTE: SNO VM provisioning via agentBareMetal requires manual VM creation
+      with InfraEnv bootstrap ISO. For automated provisioning, VMs will be created
+      in the next task using KubeVirt VirtualMachine resources.
+
+# ============================================================
+# Create InfraEnv for Agent-based installation
+# ============================================================
+
+- name: Create InfraEnv for SNO cluster discovery
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: InfraEnv
+      metadata:
+        name: sno-infraenv
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        labels:
+          workshop: capacity-planning
+          guid: "{{ guid }}"
+          networkType: dhcp
+      spec:
+        # No clusterRef - this is a standalone InfraEnv for ClusterPool provisioning
+        # Agents will be matched to ClusterDeployments via agentSelector labels
+        pullSecretRef:
+          name: pull-secret
+        sshAuthorizedKey: "{{ (r_ssh_pubkey.content | b64decode | trim) }}"
+        agentLabels:
+          workshop: capacity-planning
+          guid: "{{ guid }}"
+        nmStateConfigLabelSelector:
+          matchLabels:
+            cluster: "0"
+
+- name: Wait for InfraEnv ISO to be created
+  kubernetes.core.k8s_info:
+    api_version: agent-install.openshift.io/v1beta1
+    kind: InfraEnv
+    name: sno-infraenv
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+  register: r_infraenv
+  retries: 30
+  delay: 10
+  until:
+    - r_infraenv.resources is defined
+    - r_infraenv.resources | length > 0
+    - r_infraenv.resources[0].status is defined
+    - r_infraenv.resources[0].status.isoDownloadURL is defined
+
+- name: Get InfraEnv ISO download URL
+  ansible.builtin.set_fact:
+    sno_iso_url: "{{ r_infraenv.resources[0].status.isoDownloadURL }}"
+
+- name: Display InfraEnv ISO information
+  ansible.builtin.debug:
+    msg: |
+      InfraEnv ISO ready for SNO VM bootstrap
+      ISO URL: {{ sno_iso_url }}
+
+      This ISO will be used to boot SNO VMs created via KubeVirt.
+
+# ============================================================
+# Create KubeVirt VMs for SNO clusters
+# ============================================================
+
+- name: Create PVC for InfraEnv ISO using CDI import
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: sno-infraenv-iso
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        annotations:
+          cdi.kubevirt.io/storage.import.endpoint: "{{ sno_iso_url }}"
+        labels:
+          app: containerized-data-importer
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi
+        storageClassName: ocs-external-storagecluster-ceph-rbd-immediate
+
+- name: Wait for InfraEnv ISO import to complete
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: sno-infraenv-iso
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+  register: r_iso_pvc
+  retries: 60
+  delay: 10
+  until:
+    - r_iso_pvc.resources is defined
+    - r_iso_pvc.resources | length > 0
+    - r_iso_pvc.resources[0].status is defined
+    - r_iso_pvc.resources[0].status.phase == "Bound"
+    - r_iso_pvc.resources[0].metadata.annotations is defined
+    - r_iso_pvc.resources[0].metadata.annotations['cdi.kubevirt.io/storage.pod.phase'] is defined
+    - r_iso_pvc.resources[0].metadata.annotations['cdi.kubevirt.io/storage.pod.phase'] == "Succeeded"
+
+- name: Create SNO VMs using KubeVirt
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+    _vm_name: "sno-{{ guid }}-{{ _user }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: kubevirt.io/v1
+      kind: VirtualMachine
+      metadata:
+        name: "{{ _vm_name }}"
+        namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+        labels:
+          workshop: capacity-planning
+          guid: "{{ guid }}"
+          user: "{{ _user }}"
+          kubevirt.io/vm: "{{ _vm_name }}"
+      spec:
+        running: true
+        template:
+          metadata:
+            labels:
+              workshop: capacity-planning
+              guid: "{{ guid }}"
+              user: "{{ _user }}"
+              kubevirt.io/vm: "{{ _vm_name }}"
+          spec:
+            domain:
+              cpu:
+                cores: "{{ ocp4_workload_capacity_planning_workshop_sno_vcpu }}"
+              memory:
+                guest: "{{ ocp4_workload_capacity_planning_workshop_sno_memory }}"
+              devices:
+                disks:
+                - name: boot
+                  bootOrder: 1
+                  cdrom:
+                    bus: sata
+                - name: rootdisk
+                  bootOrder: 2
+                  disk:
+                    bus: virtio
+                - name: cloudinitdisk
+                  disk:
+                    bus: virtio
+                interfaces:
+                - name: default
+                  masquerade: {}
+                  model: virtio
+              resources:
+                requests:
+                  memory: "{{ ocp4_workload_capacity_planning_workshop_sno_memory }}"
+            networks:
+            - name: default
+              pod: {}
+            volumes:
+            - name: boot
+              persistentVolumeClaim:
+                claimName: sno-infraenv-iso
+            - name: rootdisk
+              dataVolume:
+                name: "{{ _vm_name }}-rootdisk"
+            - name: cloudinitdisk
+              cloudInitNoCloud:
+                userData: |
+                  #cloud-config
+                  user: core
+                  password: workshop
+                  chpasswd: { expire: False }
+        dataVolumeTemplates:
+        - metadata:
+            name: "{{ _vm_name }}-rootdisk"
+          spec:
+            pvc:
+              accessModes:
+              - ReadWriteOnce
+              resources:
+                requests:
+                  storage: "{{ ocp4_workload_capacity_planning_workshop_sno_disk_size }}"
+              storageClassName: "{{ ocp4_workload_capacity_planning_workshop_sno_storage_class }}"
+            source:
+              blank: {}
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Wait for SNO VMs to be running
+  vars:
+    _user_number: "{{ _n | int + 1 }}"
+    _user: "{{ ocp4_workload_capacity_planning_workshop_user_basename ~ _user_number }}"
+    _vm_name: "sno-{{ guid }}-{{ _user }}"
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ _vm_name }}"
+    namespace: "{{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}"
+  register: r_vm
+  retries: 60
+  delay: 15
+  until:
+    - r_vm.resources is defined
+    - r_vm.resources | length > 0
+    - r_vm.resources[0].status is defined
+    - r_vm.resources[0].status.ready is defined
+    - r_vm.resources[0].status.ready | bool
+  loop: "{{ range(0, ocp4_workload_capacity_planning_workshop_num_users | int) | list }}"
+  loop_control:
+    loop_var: _n
+    label: "{{ _user }}"
+
+- name: Display SNO VM provisioning status
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      SNO VMs provisioned successfully
+      ============================================================
+      Number of VMs: {{ ocp4_workload_capacity_planning_workshop_num_users }}
+      Namespace: {{ ocp4_workload_capacity_planning_workshop_clusterpool_namespace }}
+
+      SNO VMs are now booting from InfraEnv ISO and will:
+      1. Register as Agents with Assisted Installer
+      2. Be discovered by ClusterPool
+      3. Auto-provision as SNO clusters
+
+      This process takes approximately 30-45 minutes per cluster.
+      ============================================================
+
+# ============================================================
+# Create ClusterDeployment resources
+# ============================================================
+# agentBareMetal ClusterPools don't auto-create ClusterDeployments
+# We must explicitly create them for Agents to match to
+
+- name: Create ClusterDeployment and AgentClusterInstall for SNO clusters
+  ansible.builtin.include_tasks: create_cluster_deployments.yml

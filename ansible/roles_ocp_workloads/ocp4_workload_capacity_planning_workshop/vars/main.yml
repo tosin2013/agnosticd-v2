@@ -1,0 +1,5 @@
+---
+# Internal variables for capacity planning workshop
+# Variables prefixed with _ are internal and should not be overridden
+
+_ocp4_workload_capacity_planning_workshop_argocd_app_name: capacity-planning-workshop
