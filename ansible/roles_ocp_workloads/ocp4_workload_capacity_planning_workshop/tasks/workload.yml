@@ -860,6 +860,48 @@
             - __name__="container_cpu_usage_seconds_total"
 
 # ============================================================
+# HUB PATH — Verify Grafana student access RBAC
+# Confirms that the two-layer RBAC model is in place before
+# handing the environment to students:
+#   Layer 1: user can list projects → passes oauth-proxy SAR gate
+#   Layer 2: Grafana SA can list managedclusters → rbac-query-proxy shows data
+# ============================================================
+
+- name: "[HUB] Verify Layer 1 — student user-1 can list projects (oauth-proxy SAR)"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.command: >-
+    oc auth can-i list projects
+    --as={{ ocp4_workload_capacity_planning_workshop_user_basename }}-1
+  register: r_grafana_layer1_check
+  changed_when: false
+  failed_when: >-
+    r_grafana_layer1_check.rc != 0 or
+    r_grafana_layer1_check.stdout | trim != 'yes'
+
+- name: "[HUB] Verify Layer 2 — Grafana SA can list managed clusters (rbac-query-proxy)"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.command: >-
+    oc auth can-i list managedclusters
+    --as=system:serviceaccount:open-cluster-management-observability:grafana
+  register: r_grafana_layer2_check
+  changed_when: false
+  failed_when: >-
+    r_grafana_layer2_check.rc != 0 or
+    r_grafana_layer2_check.stdout | trim != 'yes'
+
+- name: "[HUB] Report Grafana RBAC verification results"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.debug:
+    msg: |
+      Grafana access RBAC verified:
+        Layer 1 (user-1 list projects):        {{ r_grafana_layer1_check.stdout | trim }}
+        Layer 2 (Grafana SA list clusters):    {{ r_grafana_layer2_check.stdout | trim }}
+      Students can log in at: {{ _hub_grafana_url | default('') }}
+      Username pattern: {{ ocp4_workload_capacity_planning_workshop_user_basename }}-NN
+      Password: {{ ocp4_workload_capacity_planning_workshop_hub_password }}
+      Note: viewers_can_edit=true is intentional — students create dashboards in Modules 2 and 5.
+
+# ============================================================
 # Post-workload: Print summary
 # ============================================================
 

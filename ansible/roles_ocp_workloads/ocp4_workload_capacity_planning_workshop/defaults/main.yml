@@ -85,6 +85,14 @@ ocp4_workload_capacity_planning_workshop_hub_rhacm_url: ""
 # Set to https://api.hub.<guid>.<domain>:6443 from hub agnosticd_user_info.
 ocp4_workload_capacity_planning_workshop_hub_api_url: ""
 
+# Explicit hub login username for this student slot.
+# The hub htpasswd IDP creates sequential users (user-1, user-2, …, user-N).
+# Set this to the matching sequential slot name when provisioning a student,
+# e.g. ocp4_workload_capacity_planning_workshop_hub_user_slot: "user-1"
+# When left empty the workload falls back to {user_basename}-{guid}, which
+# only works when import_to_rhacm.yml has also wired up matching RBAC.
+ocp4_workload_capacity_planning_workshop_hub_user_slot: ""
+
 # Shared hub password for student Grafana access.
 # Set in hub-aws.yml vars; passed to student workloads via catalog item vars.
 # All student-NN users on the hub cluster use this same password.
