@@ -1,0 +1,133 @@
+---
+# Become (root) is not required for OCP workloads
+become_override: false
+
+# Namespace for workshop deployment
+ocp4_workload_capacity_planning_workshop_namespace: capacity-workshop
+
+# Git repositories
+ocp4_workload_capacity_planning_workshop_helm_repo: https://github.com/tosin2013/openshift-capacity-planning-workshop.git
+ocp4_workload_capacity_planning_workshop_helm_branch: main
+ocp4_workload_capacity_planning_workshop_content_repo: https://github.com/tosin2013/capacity-planning-lab-guide.git
+ocp4_workload_capacity_planning_workshop_content_branch: main
+
+# Component toggles
+ocp4_workload_capacity_planning_workshop_deploy_rhacm: true
+ocp4_workload_capacity_planning_workshop_deploy_monitoring: true
+ocp4_workload_capacity_planning_workshop_deploy_sample_apps: true
+ocp4_workload_capacity_planning_workshop_deploy_simulation: true
+ocp4_workload_capacity_planning_workshop_deploy_showroom: true
+# Deploy the RHACM Dev Grafana instance on the hub for interactive dashboard building.
+# Requires kubeadmin access; the URL is emitted to agnosticd user_info as hub_dev_grafana_url.
+ocp4_workload_capacity_planning_workshop_deploy_dev_grafana: true
+
+# Node density configuration (disabled by default due to MachineConfig rollout)
+ocp4_workload_capacity_planning_workshop_enable_node_density: false
+ocp4_workload_capacity_planning_workshop_max_pods: 110
+
+# RHACM configuration
+ocp4_workload_capacity_planning_workshop_rhacm_channel: release-2.16
+
+# RHACM observability storage class
+# On-prem / CNV (OCS):  ocs-external-storagecluster-ceph-rbd
+# AWS compact clusters:  gp3-csi  (default for hub-student topology)
+ocp4_workload_capacity_planning_workshop_rhacm_storage_class: gp3-csi
+
+ocp4_workload_capacity_planning_workshop_rhacm_retention_local: 7d
+ocp4_workload_capacity_planning_workshop_rhacm_retention_resolution: 30d
+
+# RHACM Thanos bucket
+# NooBaa/OCS: auto-generated from OBC (workload.yml detects NooBaa and overrides)
+# AWS S3:     set to a unique bucket name per student guid
+ocp4_workload_capacity_planning_workshop_rhacm_thanos_bucket: "rhacm-metrics-{{ guid | default('workshop') }}"
+
+# Showroom configuration
+ocp4_workload_capacity_planning_workshop_showroom_terminal_image: quay.io/rhpds/openshift-showroom-terminal-ocp:latest
+
+# Multi-user configuration
+ocp4_workload_capacity_planning_workshop_num_users: "{{ num_users | default(0) }}"
+ocp4_workload_capacity_planning_workshop_user_basename: user
+ocp4_workload_capacity_planning_workshop_multiuser: >-
+  {{ ocp4_workload_capacity_planning_workshop_num_users | int > 0 }}
+
+# OpenShift Virtualization (CNV) for SNO VMs
+ocp4_workload_capacity_planning_workshop_deploy_virtualization: "{{ ocp4_workload_capacity_planning_workshop_multiuser }}"
+ocp4_workload_capacity_planning_workshop_virtualization_channel: stable
+ocp4_workload_capacity_planning_workshop_virtualization_namespace: openshift-cnv
+
+# SNO VM configuration (per user)
+ocp4_workload_capacity_planning_workshop_sno_vcpu: 8
+ocp4_workload_capacity_planning_workshop_sno_memory: 16Gi
+ocp4_workload_capacity_planning_workshop_sno_disk_size: 120Gi
+ocp4_workload_capacity_planning_workshop_sno_storage_class: ocs-external-storagecluster-ceph-rbd
+
+# SNO cluster configuration (legacy CNV/nested-VM path — deprecated in hub-student topology)
+# These vars are no longer used when deploy_virtualization: false
+ocp4_workload_capacity_planning_workshop_sno_openshift_version: "4.21"
+ocp4_workload_capacity_planning_workshop_sno_base_domain: "{{ cluster_domain | default('apps.cluster.example.com') }}"
+
+# ClusterPool configuration for SNO VMs
+ocp4_workload_capacity_planning_workshop_clusterpool_name: sno-workshop-pool
+ocp4_workload_capacity_planning_workshop_clusterpool_namespace: sno-workshop-pool
+
+# ============================================================
+# Hub-Student topology flags (revised architecture)
+# ============================================================
+# Hub mode: when true this workload deploys RHACM + Observability only (no apps).
+# Student mode (hub_mode: false): deploys sample apps + monitoring + simulation.
+ocp4_workload_capacity_planning_workshop_hub_mode: false
+
+# Hub RHACM API/console URL — populated on student clusters so the lab guide
+# and Module 5 can reference the RHACM console and students know where to import.
+ocp4_workload_capacity_planning_workshop_hub_rhacm_url: ""
+
+# Hub cluster API URL for student oc login (Modules 2 + 5).
+# Set to https://api.hub.<guid>.<domain>:6443 from hub agnosticd_user_info.
+ocp4_workload_capacity_planning_workshop_hub_api_url: ""
+
+# Explicit hub login username for this student slot.
+# The hub htpasswd IDP creates sequential users (user-1, user-2, …, user-N).
+# Set this to the matching sequential slot name when provisioning a student,
+# e.g. ocp4_workload_capacity_planning_workshop_hub_user_slot: "user-1"
+# When left empty the workload falls back to {user_basename}-{guid}, which
+# only works when import_to_rhacm.yml has also wired up matching RBAC.
+ocp4_workload_capacity_planning_workshop_hub_user_slot: ""
+
+# Shared hub password for student Grafana access.
+# Set in hub-aws.yml vars; passed to student workloads via catalog item vars.
+# All student-NN users on the hub cluster use this same password.
+# RHACM Grafana: viewers_can_edit=true so Viewer role allows dashboard creation.
+ocp4_workload_capacity_planning_workshop_hub_password: "openshift"
+
+# Managed cluster name used when registering this student cluster into hub RHACM.
+# Defaults to the deployment guid (e.g. student-01).
+ocp4_workload_capacity_planning_workshop_managed_cluster_name: "{{ guid }}"
+
+# Hub cluster kubeadmin password — required for the student workload to authenticate
+# to the hub for RHACM import and RBAC provisioning.
+# Set to the kubeadmin password from the hub agnosticd output.
+# Leave empty to skip hub integration (import_to_rhacm.yml will not run).
+ocp4_workload_capacity_planning_workshop_hub_kubeadmin_password: ""
+
+# Hub-Student topology capacity planning (AWS compact 3-node per student)
+# Each student cluster: 3 × m7a.2xlarge = 24 vCPU / 96 GB
+# Hub cluster:          3 × m7a.xlarge  = 12 vCPU / 48 GB (Showroom only)
+#
+# AWS quota constraints (us-east-2 defaults → requested 15):
+#   EIPs:       5 → 15  (1 per cluster: 1 hub + N students)
+#   VPCs:       5 → 15  (1 per cluster)
+#   NAT GWs:    5 → 15  per AZ
+#   vCPUs:  1,152       (hub 12 + 8 students × 24 = 204 — well within quota)
+#
+# Cost per 8-hour session (us-east-2 on-demand):
+#   Hub:         ~$12   (3 × m7a.xlarge + bastion)
+#   Per student: ~$11   (3 × m7a.2xlarge + bastion)
+#   8 students:  ~$100  total
+#   10 students: ~$122  total (needs further quota approval)
+ocp4_workload_capacity_planning_workshop_max_users: 8
+
+# Auto-injected variables from AgnosticD (documented for reference)
+# guid: unique identifier for deployment
+# cluster_domain: OpenShift cluster domain (apps subdomain)
+# cluster_api_url: OpenShift API endpoint
+# num_users: number of workshop seats (from RHDP catalog)
