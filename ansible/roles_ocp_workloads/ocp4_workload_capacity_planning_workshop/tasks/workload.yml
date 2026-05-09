@@ -859,6 +859,9 @@
             # Module 5 Panel 2B — actual CPU usage vs requested (fleet CPU gap)
             - __name__="container_cpu_usage_seconds_total"
 
+            # Module 5 Panel 3B — actual memory usage vs requested (fleet memory gap)
+            - __name__="container_memory_working_set_bytes"
+
 # ============================================================
 # HUB PATH — Verify Grafana student access RBAC
 # Confirms that the two-layer RBAC model is in place before
