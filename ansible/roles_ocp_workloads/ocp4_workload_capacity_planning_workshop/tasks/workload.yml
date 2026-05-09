@@ -863,6 +863,32 @@
             - __name__="container_memory_working_set_bytes"
 
 # ============================================================
+# HUB PATH — Pre-deploy Module 5 Grafana dashboard
+# Applies the multi-cluster capacity planning dashboard so it is
+# visible the moment students open Grafana in Part 2, before they
+# reach Part 4 where they learn how to apply dashboard ConfigMaps.
+# The ConfigMap is fetched from the lab-guide repo to ensure the
+# queries are always in sync with the current lab content.
+# ============================================================
+
+- name: "[HUB] Pre-deploy Module 5 multi-cluster capacity planning Grafana dashboard"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  ansible.builtin.uri:
+    url: >-
+      https://raw.githubusercontent.com/tosin2013/capacity-planning-lab-guide/main/content/modules/ROOT/examples/module-05/module-5---multi-cluster-capacity-planning.yaml
+    return_content: true
+  register: r_module5_dashboard_yaml
+  retries: 3
+  delay: 10
+
+- name: "[HUB] Apply Module 5 dashboard ConfigMap to observability namespace"
+  when: ocp4_workload_capacity_planning_workshop_hub_mode | bool
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ r_module5_dashboard_yaml.content | from_yaml }}"
+    namespace: open-cluster-management-observability
+
+# ============================================================
 # HUB PATH — Verify Grafana student access RBAC
 # Confirms that the two-layer RBAC model is in place before
 # handing the environment to students:
