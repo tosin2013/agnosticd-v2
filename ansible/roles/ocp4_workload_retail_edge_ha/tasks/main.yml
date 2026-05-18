@@ -1,0 +1,20 @@
+---
+- name: Running workload provision tasks
+  when: ACTION == "provision"
+  ansible.builtin.include_tasks: workload.yml
+
+- name: Running workload removal tasks
+  when: ACTION == "destroy"
+  ansible.builtin.include_tasks: remove_workload.yml
+
+- name: Running workload stop tasks
+  when: ACTION == "stop"
+  ansible.builtin.include_tasks: stop_workload.yml
+
+- name: Running workload start tasks
+  when: ACTION == "start"
+  ansible.builtin.include_tasks: start_workload.yml
+
+- name: Running workload status tasks
+  when: ACTION == "status"
+  ansible.builtin.include_tasks: status_workload.yml

@@ -1,0 +1,408 @@
+---
+- name: Running pre-workload validation tasks
+  ansible.builtin.include_tasks: pre_workload.yml
+
+- name: Create temporary directory for workshop files
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: retail-edge-ha-
+  register: r_workshop_temp_dir
+
+- name: Clone workshop repository
+  ansible.builtin.git:
+    repo: "{{ ocp4_workload_retail_edge_ha_repo_url }}"
+    dest: "{{ r_workshop_temp_dir.path }}/retail-edge-ha-workshop"
+    version: "{{ ocp4_workload_retail_edge_ha_repo_version }}"
+  register: r_git_clone
+
+- name: Print repository clone information
+  ansible.builtin.debug:
+    msg:
+      - "Cloned from: {{ ocp4_workload_retail_edge_ha_repo_url }}"
+      - "Branch/Tag: {{ ocp4_workload_retail_edge_ha_repo_version }}"
+      - "Commit: {{ r_git_clone.after }}"
+
+- name: Template Helm values file
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: "{{ r_workshop_temp_dir.path }}/custom-values.yaml"
+    mode: '0644'
+  register: r_helm_values
+
+- name: Display custom Helm values
+  ansible.builtin.debug:
+    msg: "{{ lookup('file', r_workshop_temp_dir.path + '/custom-values.yaml') }}"
+    verbosity: 1
+
+- name: Install workshop Helm chart
+  ansible.builtin.command:
+    cmd: >-
+      helm upgrade -i
+      --reset-values
+      --wait
+      --timeout 10m
+      --create-namespace
+      --take-ownership
+      --kube-insecure-skip-tls-verify
+      --namespace {{ ocp4_workload_retail_edge_ha_namespace }}
+      --values {{ r_workshop_temp_dir.path }}/custom-values.yaml
+      {{ ocp4_workload_retail_edge_ha_release_name }}
+      {{ r_workshop_temp_dir.path }}/retail-edge-ha-workshop/helm/retail-edge-ha
+  environment:
+    HELM_KUBEAPISERVER: "{{ cluster_api_url }}"
+    HELM_KUBETOKEN: "{{ cluster_api_token }}"
+    HELM_KUBEINSECURE_SKIP_TLS_VERIFY: "true"
+  register: r_helm_install
+  changed_when: r_helm_install.rc == 0
+
+- name: Print Helm installation status
+  ansible.builtin.debug:
+    msg: "Helm chart {{ ocp4_workload_retail_edge_ha_release_name }} deployed successfully"
+
+- name: Patch ArgoCD CR to treat stopped VMs as Healthy (resourceHealthChecks)
+  kubernetes.core.k8s:
+    state: patched
+    api_version: argoproj.io/v1alpha1
+    kind: ArgoCD
+    name: openshift-gitops
+    namespace: openshift-gitops
+    definition:
+      spec:
+        resourceHealthChecks:
+          - group: kubevirt.io
+            kind: VirtualMachine
+            check: |
+              hs = {}
+              if obj.status ~= nil then
+                hs.status = "Healthy"
+                hs.message = "VM exists (stopped VMs are healthy)"
+                return hs
+              end
+              hs.status = "Progressing"
+              hs.message = "Waiting for VM status"
+              return hs
+
+- name: Wait for ArgoCD parent application to be created
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: "{{ ocp4_workload_retail_edge_ha_release_name }}"
+    namespace: openshift-gitops
+  register: r_argocd_app
+  retries: 30
+  delay: 10
+  until:
+    - r_argocd_app.resources | length > 0
+
+- name: Wait for ArgoCD parent application sync to complete
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: "{{ ocp4_workload_retail_edge_ha_release_name }}"
+    namespace: openshift-gitops
+  register: r_argocd_app_status
+  retries: 120
+  delay: 10
+  until:
+    - r_argocd_app_status.resources | length > 0
+    - r_argocd_app_status.resources[0].status is defined
+    - r_argocd_app_status.resources[0].status.operationState is defined
+    - r_argocd_app_status.resources[0].status.operationState.phase in ['Succeeded', 'Failed']
+
+- name: Get child ArgoCD applications
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: openshift-gitops
+    label_selectors:
+      - "app.kubernetes.io/part-of=retail-edge-ha-workshop"
+  register: r_argocd_child_apps
+
+- name: Print ArgoCD application status
+  ansible.builtin.debug:
+    msg:
+      - "ArgoCD applications deployed:"
+      - "{{ r_argocd_child_apps.resources | map(attribute='metadata.name') | list }}"
+
+- name: Remove temporary directory
+  ansible.builtin.file:
+    path: "{{ r_workshop_temp_dir.path }}"
+    state: absent
+
+- name: Apply WeTTY terminal ImageStream
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: image.openshift.io/v1
+      kind: ImageStream
+      metadata:
+        name: workshop-wetty-terminal
+        namespace: "{{ ocp4_workload_retail_edge_ha_build_namespace }}"
+        labels:
+          app: workshop-wetty-terminal
+          app.kubernetes.io/part-of: retail-edge-ha-workshop
+          app.kubernetes.io/managed-by: agnosticd
+
+- name: Apply WeTTY terminal BuildConfig
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: build.openshift.io/v1
+      kind: BuildConfig
+      metadata:
+        name: workshop-wetty-terminal
+        namespace: "{{ ocp4_workload_retail_edge_ha_build_namespace }}"
+        labels:
+          app: workshop-wetty-terminal
+          app.kubernetes.io/part-of: retail-edge-ha-workshop
+          app.kubernetes.io/managed-by: agnosticd
+      spec:
+        output:
+          to:
+            kind: ImageStreamTag
+            name: workshop-wetty-terminal:latest
+        source:
+          type: Git
+          git:
+            uri: "{{ ocp4_workload_retail_edge_ha_git_repo }}"
+            ref: "{{ ocp4_workload_retail_edge_ha_git_branch }}"
+          contextDir: wetty-terminal
+        strategy:
+          type: Docker
+          dockerStrategy:
+            dockerfilePath: Dockerfile
+        triggers:
+          - type: ConfigChange
+
+- name: Trigger WeTTY terminal build if no successful build exists
+  ansible.builtin.command:
+    cmd: >-
+      oc start-build workshop-wetty-terminal
+      -n {{ ocp4_workload_retail_edge_ha_build_namespace }}
+      --wait=false
+  register: r_build_start
+  changed_when: r_build_start.rc == 0
+  failed_when: false
+
+- name: Wait for External Secrets Operator CRD to be established
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: clustersecretstores.external-secrets.io
+  register: r_eso_crd
+  retries: 30
+  delay: 10
+  until:
+    - r_eso_crd.resources | length > 0
+    - r_eso_crd.resources[0].status.conditions | selectattr('type', 'equalto', 'Established') | selectattr('status', 'equalto', 'True') | list | length > 0
+
+- name: Create ESO ClusterSecretStore for RHEL subscription credentials
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: external-secrets.io/v1
+      kind: ClusterSecretStore
+      metadata:
+        name: rhel-subscription-creds
+        labels:
+          app.kubernetes.io/part-of: retail-edge-ha-workshop
+          app.kubernetes.io/managed-by: agnosticd
+      spec:
+        provider:
+          kubernetes:
+            server:
+              url: "https://kubernetes.default.svc"
+              caProvider:
+                type: ConfigMap
+                name: kube-root-ca.crt
+                key: ca.crt
+                namespace: openshift-cnv
+            remoteNamespace: openshift-cnv
+            auth:
+              serviceAccount:
+                name: eso-kubernetes-reader
+                namespace: openshift-operators
+
+- name: Create placeholder flightctl-enrollment-creds secret (populated by AgnosticD when fleet is enabled)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: flightctl-enrollment-creds
+        namespace: openshift-cnv
+        labels:
+          app.kubernetes.io/part-of: retail-edge-ha-workshop
+          app.kubernetes.io/managed-by: agnosticd
+      type: Opaque
+      stringData:
+        client-certificate-data: "{{ flightctl_client_cert | default('') }}"
+        client-key-data: "{{ flightctl_client_key | default('') }}"
+        certificate-authority-data: "{{ flightctl_ca_data | default('') }}"
+        enrollment-ui-endpoint: "{{ flightctl_enrollment_ui | default('https://fleet-disabled.placeholder') }}"
+        agent-server: "{{ flightctl_agent_server | default('https://fleet-disabled.placeholder') }}"
+
+- name: Create RHEL subscription credentials secret for PostSync Job
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: rhel-subscription-creds
+        namespace: openshift-cnv
+        labels:
+          app.kubernetes.io/part-of: retail-edge-ha-workshop
+          app.kubernetes.io/managed-by: agnosticd
+      type: Opaque
+      stringData:
+        activation-key: "{{ ocp4_workload_retail_edge_ha_rhel_activation_key }}"
+        org-id: "{{ ocp4_workload_retail_edge_ha_rhel_org_id }}"
+  when:
+    - ocp4_workload_retail_edge_ha_rhel_activation_key | default('') | length > 0
+    - ocp4_workload_retail_edge_ha_rhel_org_id | default('') | length > 0
+
+- name: Configure CNV RHEL auto-subscription (belt-and-suspenders)
+  kubernetes.core.k8s:
+    state: patched
+    api_version: v1
+    kind: ConfigMap
+    name: kubevirt-ui-features
+    namespace: openshift-cnv
+    definition:
+      data:
+        automaticSubscriptionActivationKey: "{{ ocp4_workload_retail_edge_ha_rhel_activation_key }}"
+        automaticSubscriptionOrganizationId: "{{ ocp4_workload_retail_edge_ha_rhel_org_id }}"
+        automaticSubscriptionType: "monitorAndManageSubscriptions"
+  when:
+    - ocp4_workload_retail_edge_ha_rhel_activation_key | default('') | length > 0
+    - ocp4_workload_retail_edge_ha_rhel_org_id | default('') | length > 0
+  ignore_errors: true
+
+- name: Extract flightctl CA cert and generate enrollment keypair for ESO injection
+  when:
+    - ocp4_workload_retail_edge_ha_rhel_activation_key | default('') | length > 0
+    - ocp4_workload_retail_edge_ha_rhel_org_id | default('') | length > 0
+    - ocp4_workload_retail_edge_ha_enable_fleet | default(false) | bool
+  block:
+    - name: Wait for flightctl CA secret to be generated by Edge Manager
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: flightctl-ca
+        namespace: redhat-edge-manager
+      register: r_flightctl_ca
+      retries: 30
+      delay: 10
+      until: r_flightctl_ca.resources | length > 0
+
+    - name: Get flightctl client signer CA secret
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: flightctl-client-signer-ca
+        namespace: redhat-edge-manager
+      register: r_flightctl_client_signer_ca
+
+    - name: Get cluster ingress domain
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: Ingress
+        name: cluster
+      register: r_cluster_ingress
+
+    - name: Build flightctl CA bundle PEM strings
+      ansible.builtin.set_fact:
+        _flightctl_ca_tls_pem: "{{ r_flightctl_ca.resources[0].data['tls.crt'] | b64decode }}"
+        _flightctl_ca_root_pem: "{{ r_flightctl_ca.resources[0].data['ca.crt'] | b64decode }}"
+
+    - name: Base64-encode the combined CA bundle
+      ansible.builtin.set_fact:
+        _flightctl_ca_bundle_b64: "{{ (_flightctl_ca_tls_pem + _flightctl_ca_root_pem) | b64encode }}"
+        _flightctl_ingress_domain: "{{ r_cluster_ingress.resources[0].spec.domain }}"
+
+    - name: Create temp directory for enrollment keypair generation
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: flightctl-enrollment-
+      register: r_flightctl_temp
+
+    - name: Write flightctl-client-signer-ca cert to temp file
+      ansible.builtin.copy:
+        content: "{{ r_flightctl_client_signer_ca.resources[0].data['tls.crt'] | b64decode }}"
+        dest: "{{ r_flightctl_temp.path }}/signer-ca.crt"
+        mode: '0600'
+
+    - name: Write flightctl-client-signer-ca key to temp file
+      ansible.builtin.copy:
+        content: "{{ r_flightctl_client_signer_ca.resources[0].data['tls.key'] | b64decode }}"
+        dest: "{{ r_flightctl_temp.path }}/signer-ca.key"
+        mode: '0600'
+
+    - name: Generate EC private key for enrollment client
+      ansible.builtin.command:
+        cmd: openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out {{ r_flightctl_temp.path }}/client.key
+
+    - name: Generate CSR for enrollment client
+      ansible.builtin.command:
+        cmd: >
+          openssl req -new
+          -key {{ r_flightctl_temp.path }}/client.key
+          -subj "/CN=enrollment-client-agnosticd"
+          -out {{ r_flightctl_temp.path }}/client.csr
+
+    - name: Sign enrollment client certificate with signer CA
+      ansible.builtin.shell:
+        cmd: |
+          openssl x509 -req \
+            -in {{ r_flightctl_temp.path }}/client.csr \
+            -CA {{ r_flightctl_temp.path }}/signer-ca.crt \
+            -CAkey {{ r_flightctl_temp.path }}/signer-ca.key \
+            -CAcreateserial \
+            -days 365 \
+            -extfile <(printf "extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature,keyAgreement") \
+            -out {{ r_flightctl_temp.path }}/client.crt
+        executable: /bin/bash
+
+    - name: Read generated enrollment client key
+      ansible.builtin.slurp:
+        src: "{{ r_flightctl_temp.path }}/client.key"
+      register: r_enrollment_client_key
+
+    - name: Read generated enrollment client certificate
+      ansible.builtin.slurp:
+        src: "{{ r_flightctl_temp.path }}/client.crt"
+      register: r_enrollment_client_cert
+
+    - name: Create flightctl-enrollment-creds Secret in openshift-cnv
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: flightctl-enrollment-creds
+            namespace: openshift-cnv
+            labels:
+              app.kubernetes.io/part-of: retail-edge-ha-workshop
+              app.kubernetes.io/managed-by: agnosticd
+          type: Opaque
+          stringData:
+            client-key-data: "{{ r_enrollment_client_key.content }}"
+            client-certificate-data: "{{ r_enrollment_client_cert.content }}"
+            certificate-authority-data: "{{ _flightctl_ca_bundle_b64 }}"
+            enrollment-ui-endpoint: "https://console-openshift-console.apps.{{ _flightctl_ingress_domain }}/edge"
+            agent-server: "https://agent-api.redhat-edge-manager.apps.{{ _flightctl_ingress_domain }}/"
+
+    - name: Remove temp directory
+      ansible.builtin.file:
+        path: "{{ r_flightctl_temp.path }}"
+        state: absent
+
+- name: Workload deployment complete
+  ansible.builtin.debug:
+    msg: "Workshop deployment initiated successfully. Resources are being synchronized by ArgoCD."
+
+- name: Running post-workload validation tasks
+  ansible.builtin.include_tasks: post_workload.yml

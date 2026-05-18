@@ -1,0 +1,45 @@
+# AgnosticD-generated Helm values for Retail Edge HA Workshop
+# This file maps AgnosticD workload variables to Helm chart values
+
+# Student configuration
+students:
+  enabled: true
+  count: {{ num_users | default(5) }}
+
+# Infrastructure configuration (disabled - using direct Helm templates now)
+infrastructure:
+  enabled: false
+
+# Fleet Management configuration
+fleetManagement:
+  enabled: {{ ocp4_workload_retail_edge_ha_enable_fleet | default(true) | lower }}
+  rhacm:
+    # RHACM is managed by AgnosticD (install_rhacm.yml) - not ArgoCD
+    argocdManaged: false
+
+# Cluster configuration (auto-discovered)
+global:
+  clusterDomain: {{ ocp4_workload_retail_edge_ha_cluster_domain }}
+  clusterApiUrl: {{ ocp4_workload_retail_edge_ha_cluster_api_url }}
+
+# VirtualMachine configuration
+virtualMachines:
+  enabled: true
+  storageClass: {{ workshop_storage_class.metadata.name }}
+  autoStart: {{ ocp4_workload_retail_edge_ha_auto_start_vms | default(false) | lower }}
+
+  # Module-specific configuration
+  module1:
+    enabled: {{ ocp4_workload_retail_edge_ha_enable_module1 | default(true) | lower }}
+
+  module2:
+    enabled: {{ ocp4_workload_retail_edge_ha_enable_module2 | default(true) | lower }}
+
+  module3:
+    enabled: {{ ocp4_workload_retail_edge_ha_enable_module3 | default(false) | lower }}
+
+# Showroom configuration
+showroom:
+  enabled: {{ ocp4_workload_retail_edge_ha_enable_showroom | default(true) | lower }}
+  gitUrl: {{ ocp4_workload_retail_edge_ha_repo_url }}
+  gitBranch: {{ ocp4_workload_retail_edge_ha_repo_version }}

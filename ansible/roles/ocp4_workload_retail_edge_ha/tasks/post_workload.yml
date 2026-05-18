@@ -1,0 +1,426 @@
+---
+# Post-workload validation tasks
+# Validates successful deployment and gathers workshop access information
+
+- name: Wait for student namespaces to be created
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+  register: r_all_namespaces
+  retries: 30
+  delay: 10
+  until:
+    - r_all_namespaces.resources | selectattr('metadata.name', 'match', '^retail-edge-student-') | list | length >= (num_users | int)
+
+- name: Get student namespaces
+  ansible.builtin.set_fact:
+    workshop_student_namespaces: >-
+      {{
+        r_all_namespaces.resources
+        | selectattr('metadata.name', 'match', '^retail-edge-student-[0-9]+$')
+        | map(attribute='metadata.name')
+        | sort
+        | list
+      }}
+
+- name: Print created student namespaces
+  ansible.builtin.debug:
+    msg: "Student namespaces: {{ workshop_student_namespaces }}"
+
+- name: Check if Showroom is enabled
+  when: ocp4_workload_retail_edge_ha_enable_showroom | bool
+  block:
+    - name: Wait for Showroom instances to be ready
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "showroom-{{ guid }}-student{{ '%02d' | format(item) }}"
+        label_selectors:
+          - "app.kubernetes.io/name=showroom"
+      register: r_showroom_pods
+      retries: 60
+      delay: 10
+      loop: "{{ range(1, (num_users | int) + 1) | list }}"
+      until:
+        - r_showroom_pods.resources | length > 0
+        - r_showroom_pods.resources[0].status.phase == "Running"
+
+    - name: Get Showroom routes
+      kubernetes.core.k8s_info:
+        api_version: route.openshift.io/v1
+        kind: Route
+        namespace: "showroom-{{ guid }}-student{{ '%02d' | format(item) }}"
+      register: r_showroom_routes
+      loop: "{{ range(1, (num_users | int) + 1) | list }}"
+
+    - name: Build Showroom URL list
+      ansible.builtin.set_fact:
+        workshop_showroom_urls: >-
+          {{
+            r_showroom_routes.results
+            | map(attribute='resources')
+            | flatten
+            | map(attribute='spec.host')
+            | map('regex_replace', '^', 'https://')
+            | list
+          }}
+
+    - name: Print Showroom access URLs
+      ansible.builtin.debug:
+        msg: "{{ workshop_showroom_urls }}"
+
+    - name: Save per-student Showroom URL and cluster info to agnosticd_user_info
+      agnosticd.core.agnosticd_user_info:
+        user: "student{{ '%02d' | format(item) }}"
+        msg: |
+          Workshop Showroom URL: {{ workshop_showroom_urls[item - 1] }}
+          OpenShift Console: https://console-openshift-console.apps.{{ ocp4_workload_retail_edge_ha_cluster_domain }}
+          OpenShift API: {{ ocp4_workload_retail_edge_ha_cluster_api_url }}
+          Student Namespace: retail-edge-student-{{ '%02d' | format(item) }}
+          Cluster Admin Username: {{ openshift_cluster_admin_username }}
+        data:
+          showroom_url: "{{ workshop_showroom_urls[item - 1] }}"
+          openshift_console_url: "https://console-openshift-console.apps.{{ ocp4_workload_retail_edge_ha_cluster_domain }}"
+          openshift_api_url: "{{ ocp4_workload_retail_edge_ha_cluster_api_url }}"
+          student_namespace: "retail-edge-student-{{ '%02d' | format(item) }}"
+          openshift_cluster_admin_username: "{{ openshift_cluster_admin_username }}"
+          openshift_cluster_admin_password: "{{ openshift_cluster_admin_password }}"
+      loop: "{{ range(1, (num_users | int) + 1) | list }}"
+      when: not silent | bool
+
+- name: Wait for VirtualMachines to be created (not necessarily running)
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ workshop_student_namespaces[0] }}"
+  register: r_vms
+  retries: 30
+  delay: 10
+  until:
+    - r_vms.resources | length > 0
+  when: workshop_student_namespaces | length > 0
+
+- name: Print VirtualMachine status
+  ansible.builtin.debug:
+    msg:
+      - "Found {{ r_vms.resources | length }} VirtualMachines in {{ workshop_student_namespaces[0] }}"
+      - "VMs created in stopped state (running: false)"
+      - "Students can start VMs with: virtctl start <vm-name> -n <namespace>"
+      - "VMs will reach Running state in ~30 seconds after start"
+  when:
+    - workshop_student_namespaces | length > 0
+    - r_vms.resources is defined
+
+- name: Auto-start VirtualMachines if enabled
+  when:
+    - workshop_student_namespaces | length > 0
+    - ocp4_workload_retail_edge_ha_auto_start_vms | bool
+  block:
+    - name: Get list of VMs to start
+      ansible.builtin.set_fact:
+        vms_to_start: >-
+          {{
+            r_vms.resources
+            | map(attribute='metadata.name')
+            | list
+          }}
+
+    - name: Start all VirtualMachines
+      kubernetes.core.k8s:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        name: "{{ item }}"
+        namespace: "{{ workshop_student_namespaces[0] }}"
+        state: present
+        definition:
+          spec:
+            running: true
+      loop: "{{ vms_to_start }}"
+
+    - name: Wait for VMs to reach Running state
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        namespace: "{{ workshop_student_namespaces[0] }}"
+      register: r_vmis
+      retries: 30
+      delay: 10
+      until:
+        - r_vmis.resources | length > 0
+        - r_vmis.resources | selectattr('status.phase', 'equalto', 'Running') | list | length == vms_to_start | length
+
+    - name: Print auto-start status
+      ansible.builtin.debug:
+        msg: "All VMs started successfully and reached Running state"
+
+- name: Inject Module 3 Assisted Installer resources into student cluster namespaces
+  when:
+    - ocp4_workload_retail_edge_ha_enable_module3 | default(true) | bool
+    - ocp4_workload_retail_edge_ha_assisted_installer_enabled | default(true) | bool
+  block:
+    - name: Create pull-secret in student cluster namespaces
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: pull-secret
+            namespace: "student-{{ '%02d' | format(item) }}-twonode"
+            labels:
+              student-id: "{{ '%02d' | format(item) }}"
+              module: module3
+              app.kubernetes.io/part-of: retail-edge-ha-workshop
+              app.kubernetes.io/managed-by: agnosticd
+          type: kubernetes.io/dockerconfigjson
+          stringData:
+            .dockerconfigjson: "{{ ocp4_workload_retail_edge_ha_pull_secret }}"
+      loop: "{{ range(1, (num_users | int) + 1) | list }}"
+      no_log: true
+      ignore_errors: true
+
+    - name: Patch AgentClusterInstall with SSH public key
+      kubernetes.core.k8s:
+        state: patched
+        api_version: extensions.hive.openshift.io/v1beta1
+        kind: AgentClusterInstall
+        name: "student-{{ '%02d' | format(item) }}-twonode"
+        namespace: "student-{{ '%02d' | format(item) }}-twonode"
+        definition:
+          spec:
+            sshPublicKey: "{{ ocp4_workload_retail_edge_ha_ssh_public_key | default('') }}"
+      loop: "{{ range(1, (num_users | int) + 1) | list }}"
+      when: ocp4_workload_retail_edge_ha_ssh_public_key is defined and ocp4_workload_retail_edge_ha_ssh_public_key | length > 0
+
+    - name: Patch InfraEnv with SSH authorized key
+      kubernetes.core.k8s:
+        state: patched
+        api_version: agent-install.openshift.io/v1beta1
+        kind: InfraEnv
+        name: "student-{{ '%02d' | format(item) }}-twonode"
+        namespace: "student-{{ '%02d' | format(item) }}-twonode"
+        definition:
+          spec:
+            sshAuthorizedKey: "{{ ocp4_workload_retail_edge_ha_ssh_public_key | default('') }}"
+      loop: "{{ range(1, (num_users | int) + 1) | list }}"
+      when: ocp4_workload_retail_edge_ha_ssh_public_key is defined and ocp4_workload_retail_edge_ha_ssh_public_key | length > 0
+
+    - name: Wait for InfraEnv discovery ISO to be generated
+      kubernetes.core.k8s_info:
+        api_version: agent-install.openshift.io/v1beta1
+        kind: InfraEnv
+        name: "student-{{ '%02d' | format(item) }}-twonode"
+        namespace: "student-{{ '%02d' | format(item) }}-twonode"
+      register: r_infraenv
+      retries: 60
+      delay: 10
+      loop: "{{ range(1, (num_users | int) + 1) | list }}"
+      until:
+        - r_infraenv.resources | length > 0
+        - r_infraenv.resources[0].status is defined
+        - r_infraenv.resources[0].status.isoDownloadURL is defined
+        - r_infraenv.resources[0].status.isoDownloadURL | length > 0
+      ignore_errors: true
+
+    - name: Report InfraEnv ISO generation status
+      ansible.builtin.debug:
+        msg: >-
+          InfraEnv student-{{ '%02d' | format(item) }}-twonode ISO status:
+          {% if r_infraenv.results[item - 1].resources | default([]) | length > 0
+             and r_infraenv.results[item - 1].resources[0].status is defined
+             and r_infraenv.results[item - 1].resources[0].status.isoDownloadURL is defined %}
+          READY — {{ r_infraenv.results[item - 1].resources[0].status.isoDownloadURL }}
+          {% else %}
+          PENDING — ISO not yet generated (Assisted Service may still be initializing)
+          {% endif %}
+      loop: "{{ range(1, (num_users | int) + 1) | list }}"
+
+    - name: Create discovery ISO DataVolumes for Module 3 VMs
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cdi.kubevirt.io/v1beta1
+          kind: DataVolume
+          metadata:
+            name: "{{ item.vm }}-discovery-iso"
+            namespace: "retail-edge-student-{{ item.student }}"
+            labels:
+              student-id: "{{ item.student }}"
+              module: module3
+              app.kubernetes.io/part-of: retail-edge-ha-workshop
+              app.kubernetes.io/managed-by: agnosticd
+          spec:
+            source:
+              http:
+                url: "{{ (r_infraenv.results[item.student_idx].resources[0].status.isoDownloadURL) }}"
+            storage:
+              resources:
+                requests:
+                  storage: 1Gi
+              storageClassName: "{{ ocp4_workload_retail_edge_ha_storage_class }}"
+              accessModes:
+                - ReadWriteOnce
+      loop:
+        - { student: "01", student_idx: 0, vm: "twonode-master1" }
+        - { student: "01", student_idx: 0, vm: "twonode-master2" }
+        - { student: "01", student_idx: 0, vm: "twonode-arbiter" }
+        - { student: "02", student_idx: 1, vm: "twonode-master1" }
+        - { student: "02", student_idx: 1, vm: "twonode-master2" }
+        - { student: "02", student_idx: 1, vm: "twonode-arbiter" }
+      when:
+        - (item.student_idx | int) < (num_users | int)
+        - r_infraenv.results[item.student_idx].resources | default([]) | length > 0
+        - r_infraenv.results[item.student_idx].resources[0].status is defined
+        - r_infraenv.results[item.student_idx].resources[0].status.isoDownloadURL is defined
+        - r_infraenv.results[item.student_idx].resources[0].status.isoDownloadURL | length > 0
+      ignore_errors: true
+
+    - name: Print Module 3 Assisted Installer status
+      ansible.builtin.debug:
+        msg:
+          - "Module 3 Assisted Installer resources configured"
+          - "Discovery ISOs generated for {{ num_users }} student cluster(s)"
+          - "Start VMs to begin agent discovery: virtctl start twonode-master1 -n retail-edge-student-NN"
+          - "Monitor agent registration in RHACM console: Clusters > student-NN-twonode"
+
+    # ----------------------------------------------------------------
+    # Auto-provision block: start VMs, bind agents, kick off install.
+    # Disabled by default so students complete the discovery flow
+    # themselves as a Module 3 exercise.  Set
+    # ocp4_workload_retail_edge_ha_module3_auto_provision: true
+    # to fully automate (e.g. for deploy-test runs).
+    # ----------------------------------------------------------------
+    - name: Auto-provision Module 3 twonode cluster via RHACM Assisted Installer
+      when: ocp4_workload_retail_edge_ha_module3_auto_provision | default(false) | bool
+      block:
+
+        - name: Wait for discovery ISO DataVolumes to be Succeeded before starting VMs
+          kubernetes.core.k8s_info:
+            api_version: cdi.kubevirt.io/v1beta1
+            kind: DataVolume
+            name: "{{ item.vm }}-discovery-iso"
+            namespace: "retail-edge-student-{{ item.student }}"
+          register: r_iso_dv_ready
+          retries: 30
+          delay: 20
+          loop:
+            - { student: "01", student_idx: 0, vm: "twonode-master1" }
+            - { student: "01", student_idx: 0, vm: "twonode-master2" }
+            - { student: "01", student_idx: 0, vm: "twonode-arbiter" }
+            - { student: "02", student_idx: 1, vm: "twonode-master1" }
+            - { student: "02", student_idx: 1, vm: "twonode-master2" }
+            - { student: "02", student_idx: 1, vm: "twonode-arbiter" }
+          until:
+            - r_iso_dv_ready.resources | length > 0
+            - r_iso_dv_ready.resources[0].status.phase == "Succeeded"
+          when: (item.student_idx | int) < (num_users | int)
+          ignore_errors: true
+
+        - name: Start twonode VMs (boot from discovery ISO CDROM)
+          kubernetes.core.k8s:
+            state: patched
+            api_version: kubevirt.io/v1
+            kind: VirtualMachine
+            name: "{{ item.vm }}"
+            namespace: "retail-edge-student-{{ item.student }}"
+            definition:
+              spec:
+                running: true
+          loop:
+            - { student: "01", student_idx: 0, vm: "twonode-master1" }
+            - { student: "01", student_idx: 0, vm: "twonode-master2" }
+            - { student: "01", student_idx: 0, vm: "twonode-arbiter" }
+            - { student: "02", student_idx: 1, vm: "twonode-master1" }
+            - { student: "02", student_idx: 1, vm: "twonode-master2" }
+            - { student: "02", student_idx: 1, vm: "twonode-arbiter" }
+          when: (item.student_idx | int) < (num_users | int)
+          ignore_errors: true
+
+        - name: Wait for 3 agents per student to register with Assisted Service
+          kubernetes.core.k8s_info:
+            api_version: agent-install.openshift.io/v1beta1
+            kind: Agent
+            namespace: "student-{{ '%02d' | format(item) }}-twonode"
+          register: r_agents
+          retries: 90
+          delay: 10
+          loop: "{{ range(1, (num_users | int) + 1) | list }}"
+          until: r_agents.resources | length >= 3
+          ignore_errors: true
+
+        # Build a flat list: each agent dict gets an injected _student_num key.
+        # This avoids nested loops which Ansible doesn't support natively.
+        - name: Build flat agent list with student assignment
+          ansible.builtin.set_fact:
+            module3_all_agents: >-
+              {{
+                module3_all_agents | default([]) +
+                (r_agents.results[item - 1].resources | default([])
+                 | map('combine', {'_student_num': item}) | list)
+              }}
+          loop: "{{ range(1, (num_users | int) + 1) | list }}"
+
+        - name: Label agents to match ClusterDeployment agentSelector
+          kubernetes.core.k8s:
+            state: patched
+            api_version: agent-install.openshift.io/v1beta1
+            kind: Agent
+            name: "{{ item.metadata.name }}"
+            namespace: "student-{{ '%02d' | format(item._student_num) }}-twonode"
+            definition:
+              metadata:
+                labels:
+                  student-id: "{{ '%02d' | format(item._student_num) }}"
+                  module: module3
+          loop: "{{ module3_all_agents | default([]) }}"
+          ignore_errors: true
+
+        - name: Approve agents and set master role (Assisted Service requires explicit approval)
+          kubernetes.core.k8s:
+            state: patched
+            api_version: agent-install.openshift.io/v1beta1
+            kind: Agent
+            name: "{{ item.metadata.name }}"
+            namespace: "student-{{ '%02d' | format(item._student_num) }}-twonode"
+            definition:
+              spec:
+                approved: true
+                role: master
+                clusterDeploymentName:
+                  name: "student-{{ '%02d' | format(item._student_num) }}-twonode"
+                  namespace: "student-{{ '%02d' | format(item._student_num) }}-twonode"
+          loop: "{{ module3_all_agents | default([]) }}"
+          ignore_errors: true
+
+        - name: Report agent registration status
+          ansible.builtin.debug:
+            msg: >-
+              Student {{ '%02d' | format(item) }}: {{ r_agents.results[item - 1].resources | default([]) | length }} agent(s) registered
+              (need 3 for twonode+arbiter install)
+          loop: "{{ range(1, (num_users | int) + 1) | list }}"
+
+- name: Save cluster-level deployment summary to agnosticd_user_info
+  agnosticd.core.agnosticd_user_info:
+    msg: |
+      Retail Edge HA Workshop deployed successfully.
+      Students: {{ num_users }}
+      OpenShift Console: https://console-openshift-console.apps.{{ ocp4_workload_retail_edge_ha_cluster_domain }}
+      OpenShift API: {{ ocp4_workload_retail_edge_ha_cluster_api_url }}
+      Cluster Admin Username: {{ openshift_cluster_admin_username }}
+      Showroom enabled: {{ ocp4_workload_retail_edge_ha_enable_showroom }}
+    data:
+      openshift_cluster_ingress_domain: "{{ ocp4_workload_retail_edge_ha_cluster_domain }}"
+      openshift_console_url: "https://console-openshift-console.apps.{{ ocp4_workload_retail_edge_ha_cluster_domain }}"
+      openshift_api_url: "{{ ocp4_workload_retail_edge_ha_cluster_api_url }}"
+      openshift_cluster_admin_username: "{{ openshift_cluster_admin_username }}"
+      openshift_cluster_admin_password: "{{ openshift_cluster_admin_password }}"
+      num_users: "{{ num_users }}"
+  when: not silent | bool
+
+- name: Post-workload tasks complete
+  ansible.builtin.debug:
+    msg:
+      - "Workshop deployment validated successfully"
+      - "Students: {{ num_users }}"
+      - "Namespaces: {{ workshop_student_namespaces | length }}"
+      - "Showroom enabled: {{ ocp4_workload_retail_edge_ha_enable_showroom }}"
