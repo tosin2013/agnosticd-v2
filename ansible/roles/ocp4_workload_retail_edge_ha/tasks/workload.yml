@@ -72,6 +72,44 @@
   ansible.builtin.debug:
     msg: "Helm chart {{ ocp4_workload_retail_edge_ha_release_name }} deployed successfully"
 
+- name: Build list of all workshop namespaces to label for ArgoCD access
+  ansible.builtin.set_fact:
+    _argocd_managed_namespaces: >-
+      {{
+        ['retail-edge-ha-gitops', 'retail-edge-infrastructure', 'retail-edge-workshop-builds']
+        + range(1, (num_users | int) + 1)
+          | map('int') | list
+          | map('string')
+          | map('zfill', 2)
+          | map('regex_replace', '^(.+)$', 'showroom-student-\1')
+          | list
+        + range(1, (num_users | int) + 1)
+          | map('int') | list
+          | map('string')
+          | map('zfill', 2)
+          | map('regex_replace', '^(.+)$', 'retail-edge-student-\1')
+          | list
+        + range(1, (num_users | int) + 1)
+          | map('int') | list
+          | map('string')
+          | map('zfill', 2)
+          | map('regex_replace', '^(.+)$', 'retail-edge-student-\1-udn')
+          | list
+      }}
+
+- name: Label workshop namespaces as managed by openshift-gitops (grants ArgoCD SA admin access)
+  kubernetes.core.k8s:
+    state: patched
+    api_version: v1
+    kind: Namespace
+    name: "{{ item }}"
+    definition:
+      metadata:
+        labels:
+          argocd.argoproj.io/managed-by: openshift-gitops
+  loop: "{{ _argocd_managed_namespaces }}"
+  ignore_errors: true
+
 - name: Patch ArgoCD CR to treat stopped VMs as Healthy (resourceHealthChecks)
   kubernetes.core.k8s:
     state: patched
