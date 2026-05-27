@@ -200,6 +200,11 @@
           app.kubernetes.io/part-of: retail-edge-ha-workshop
           module: module3
           student-id: "{{ _student_id }}"
+        annotations:
+          # Force immediate PVC binding so CDI upload proxy starts.
+          # The default RBD storage class uses WaitForFirstConsumer which would
+          # stall CDI's VolumePopulator path — this annotation bypasses that.
+          cdi.kubevirt.io/storage.bind.immediate.requested: "true"
       spec:
         source:
           upload: {}
