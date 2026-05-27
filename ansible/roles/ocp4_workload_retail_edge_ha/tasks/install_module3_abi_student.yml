@@ -235,6 +235,20 @@
   register: r_iso_upload
   changed_when: r_iso_upload.rc == 0
 
+# Suspend ArgoCD automated sync for vms-module3 before patching the VM specs.
+# ArgoCD will revert our CDROM disk changes and runStrategy changes if auto-sync
+# is enabled, because the Git repo has the VMs in Halted state without a CDROM disk.
+- name: "Student {{ _student_id }} — Suspend ArgoCD auto-sync for vms-module3"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: retail-edge-ha-vms-module3
+    namespace: openshift-gitops
+    definition:
+      spec:
+        syncPolicy: {}
+
 # Patch both VMs to add the agent ISO as a CDROM disk (bootOrder 1) before starting.
 # The patch must include ALL existing disks/volumes because strategic merge patch
 # on CRDs replaces the entire array. We preserve rootdisk and cloudinitdisk entries.
@@ -458,6 +472,20 @@
   loop:
     - rhcos-twonode-node1
     - rhcos-twonode-node2
+
+# Re-enable ArgoCD auto-sync after installation. The VMs are now running OCP.
+# ArgoCD will see the VMs as OutOfSync (runStrategy: Always vs Halted in Git)
+# but since selfHeal=true it will try to stop them again. So we leave sync paused
+# and rely on manual sync for day-2 operations on the two-node OCP cluster.
+# This is intentional for the workshop PoC: VMs must stay running as OCP nodes.
+- name: "Student {{ _student_id }} — Leave ArgoCD sync paused for vms-module3 (VMs are OCP nodes)"
+  ansible.builtin.debug:
+    msg: >-
+      ArgoCD auto-sync for retail-edge-ha-vms-module3 remains paused.
+      The two-node OCP VMs are now running as cluster nodes.
+      Manual ArgoCD sync would stop the VMs (Git has runStrategy: Halted).
+      To re-enable: oc patch application retail-edge-ha-vms-module3 -n openshift-gitops
+      --type merge -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
 
 - name: "Student {{ _student_id }} — Store kubeconfig as Secret in student namespace"
   kubernetes.core.k8s:
