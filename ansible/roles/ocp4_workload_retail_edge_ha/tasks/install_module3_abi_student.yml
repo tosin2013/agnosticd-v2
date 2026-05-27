@@ -183,7 +183,11 @@
   register: r_abi_create_image
   changed_when: r_abi_create_image.rc == 0
 
-- name: "Student {{ _student_id }} — Import agent ISO as DataVolume"
+# The agent ISO needs to be mounted by two VMs simultaneously on different nodes.
+# CephFS (RWX) causes QEMU IO errors with filesystem-mode PVCs as disk images.
+# Solution: Upload ISO to one RBD (RWO) DataVolume, then CDI-clone it for node2.
+# Each VM gets its own exclusive RBD PVC — QEMU block access works perfectly.
+- name: "Student {{ _student_id }} — Import agent ISO as DataVolume (node1 copy)"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -203,12 +207,6 @@
           resources:
             requests:
               storage: 2Gi
-          # CephFS with ReadWriteMany allows both twonode VMs on different nodes
-          # to mount the agent ISO CDROM simultaneously. Ceph RBD (ReadWriteOnce)
-          # only allows attachment to a single node at a time.
-          storageClassName: ocs-external-storagecluster-cephfs
-          accessModes:
-            - ReadWriteMany
 
 - name: "Student {{ _student_id }} — Wait for agent ISO DataVolume to be UploadReady"
   kubernetes.core.k8s_info:
@@ -237,6 +235,46 @@
       --wait-secs=300
   register: r_iso_upload
   changed_when: r_iso_upload.rc == 0
+
+# CDI-clone the uploaded ISO PVC for node2.
+# Cloning is fast (storage copy, no re-upload). Each node gets its own RBD PVC
+# so there is no ReadWriteOnce multi-attach conflict between virt-launcher pods.
+- name: "Student {{ _student_id }} — Clone agent ISO DataVolume for node2"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: agent-iso-node2-s{{ _student_id }}
+        namespace: "{{ _student_ns }}"
+        labels:
+          app.kubernetes.io/part-of: retail-edge-ha-workshop
+          module: module3
+          student-id: "{{ _student_id }}"
+      spec:
+        source:
+          pvc:
+            namespace: "{{ _student_ns }}"
+            name: agent-iso-s{{ _student_id }}
+        storage:
+          resources:
+            requests:
+              storage: 2Gi
+
+- name: "Student {{ _student_id }} — Wait for node2 ISO clone to complete"
+  kubernetes.core.k8s_info:
+    api_version: cdi.kubevirt.io/v1beta1
+    kind: DataVolume
+    name: agent-iso-node2-s{{ _student_id }}
+    namespace: "{{ _student_ns }}"
+  register: r_agent_iso_node2_dv
+  retries: 40
+  delay: 15
+  until:
+    - r_agent_iso_node2_dv.resources | length > 0
+    - r_agent_iso_node2_dv.resources[0].status.phase is defined
+    - r_agent_iso_node2_dv.resources[0].status.phase == "Succeeded"
 
 # Suspend ArgoCD automated sync for vms-module3 before patching the VM specs.
 # ArgoCD will revert our CDROM disk changes and runStrategy changes if auto-sync
@@ -299,7 +337,7 @@
                         addresses:
                         - 10.103.0.10/24
 
-- name: "Student {{ _student_id }} — Add agent ISO CDROM to node2 VM spec"
+- name: "Student {{ _student_id }} — Add agent ISO CDROM to node2 VM spec (uses its own clone)"
   kubernetes.core.k8s:
     state: patched
     api_version: kubevirt.io/v1
@@ -324,7 +362,7 @@
             volumes:
               - name: agent-cdrom
                 dataVolume:
-                  name: agent-iso-s{{ _student_id }}
+                  name: agent-iso-node2-s{{ _student_id }}
               - name: rootdisk
                 dataVolume:
                   name: rhcos-twonode-node2-disk
