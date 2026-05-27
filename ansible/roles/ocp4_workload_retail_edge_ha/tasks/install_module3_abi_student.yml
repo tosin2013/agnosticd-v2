@@ -116,7 +116,6 @@
           username: {{ _redfish_username }}
           password: adminpass
           disableCertificateVerification: true
-        bootMode: UEFI
       - hostname: node2
         role: master
         interfaces:
@@ -138,7 +137,6 @@
           username: {{ _redfish_username }}
           password: adminpass
           disableCertificateVerification: true
-        bootMode: UEFI
 
 - name: "Student {{ _student_id }} — Generate ABI agent ISO"
   ansible.builtin.command:
