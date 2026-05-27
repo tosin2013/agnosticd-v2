@@ -203,9 +203,12 @@
           resources:
             requests:
               storage: 2Gi
-          storageClassName: ocs-external-storagecluster-ceph-rbd-immediate
+          # CephFS with ReadWriteMany allows both twonode VMs on different nodes
+          # to mount the agent ISO CDROM simultaneously. Ceph RBD (ReadWriteOnce)
+          # only allows attachment to a single node at a time.
+          storageClassName: ocs-external-storagecluster-cephfs
           accessModes:
-            - ReadWriteOnce
+            - ReadWriteMany
 
 - name: "Student {{ _student_id }} — Wait for agent ISO DataVolume to be UploadReady"
   kubernetes.core.k8s_info:
