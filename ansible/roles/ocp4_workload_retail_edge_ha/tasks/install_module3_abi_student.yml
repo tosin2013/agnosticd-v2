@@ -237,17 +237,25 @@
 
 # Suspend ArgoCD automated sync for vms-module3 before patching the VM specs.
 # ArgoCD will revert our CDROM disk changes and runStrategy changes if auto-sync
-# is enabled, because the Git repo has the VMs in Halted state without a CDROM disk.
+# is enabled (Git has VMs in Halted state with no CDROM disk).
+# Use JSON patch (oc) to remove only the 'automated' field without touching
+# the rest of syncPolicy (syncOptions, retry). Ignore error if already removed.
 - name: "Student {{ _student_id }} — Suspend ArgoCD auto-sync for vms-module3"
-  kubernetes.core.k8s:
-    state: patched
-    api_version: argoproj.io/v1alpha1
-    kind: Application
-    name: retail-edge-ha-vms-module3
-    namespace: openshift-gitops
-    definition:
-      spec:
-        syncPolicy: {}
+  ansible.builtin.command:
+    cmd: >-
+      oc patch application.argoproj.io retail-edge-ha-vms-module3
+      -n openshift-gitops
+      --type=json
+      -p '[{"op": "remove", "path": "/spec/syncPolicy/automated"}]'
+      --server {{ openshift_api_url }}
+      --token {{ _ocp4_workload_retail_edge_ha_admin_token }}
+      --insecure-skip-tls-verify
+  register: r_argocd_suspend
+  changed_when: "'patched' in r_argocd_suspend.stdout"
+  failed_when:
+    - r_argocd_suspend.rc != 0
+    - "'remove operation does not apply' not in r_argocd_suspend.stderr"
+    - "'does not exist' not in r_argocd_suspend.stderr"
 
 # Patch both VMs to add the agent ISO as a CDROM disk (bootOrder 1) before starting.
 # The patch must include ALL existing disks/volumes because strategic merge patch
