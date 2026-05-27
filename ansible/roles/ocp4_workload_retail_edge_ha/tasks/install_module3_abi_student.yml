@@ -100,17 +100,6 @@
         interfaces:
         - name: eth1
           macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:01:01"
-        networkConfig:
-          interfaces:
-          - name: eth1
-            type: ethernet
-            state: up
-            ipv4:
-              enabled: true
-              address:
-              - ip: 10.103.0.10
-                prefix-length: 24
-              dhcp: false
         bmc:
           address: redfish-virtualmedia://{{ _redfish_ip }}/redfish/v1/Systems/rhcos-twonode-node1
           username: {{ _redfish_username }}
@@ -121,7 +110,59 @@
         interfaces:
         - name: eth1
           macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:02:01"
-        networkConfig:
+        bmc:
+          address: redfish-virtualmedia://{{ _redfish_ip }}/redfish/v1/Systems/rhcos-twonode-node2
+          username: {{ _redfish_username }}
+          password: adminpass
+          disableCertificateVerification: true
+
+# NMStateConfig manifests provide static network config without requiring
+# nmstatectl on the bastion. The installer includes them in the ISO and
+# the agent applies them on boot (nmstate is available in RHCOS).
+- name: "Student {{ _student_id }} — Create cluster-manifests directory"
+  ansible.builtin.file:
+    path: "{{ _abi_work_dir }}/cluster-manifests"
+    state: directory
+    mode: '0755'
+
+- name: "Student {{ _student_id }} — Write NMStateConfig for node1"
+  ansible.builtin.copy:
+    dest: "{{ _abi_work_dir }}/cluster-manifests/nmstateconfig-node1.yaml"
+    mode: '0644'
+    content: |
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: NMStateConfig
+      metadata:
+        name: node1
+        namespace: NONE
+      spec:
+        config:
+          interfaces:
+          - name: eth1
+            type: ethernet
+            state: up
+            ipv4:
+              enabled: true
+              address:
+              - ip: 10.103.0.10
+                prefix-length: 24
+              dhcp: false
+        interfaces:
+        - name: eth1
+          macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:01:01"
+
+- name: "Student {{ _student_id }} — Write NMStateConfig for node2"
+  ansible.builtin.copy:
+    dest: "{{ _abi_work_dir }}/cluster-manifests/nmstateconfig-node2.yaml"
+    mode: '0644'
+    content: |
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: NMStateConfig
+      metadata:
+        name: node2
+        namespace: NONE
+      spec:
+        config:
           interfaces:
           - name: eth1
             type: ethernet
@@ -132,11 +173,9 @@
               - ip: 10.103.0.11
                 prefix-length: 24
               dhcp: false
-        bmc:
-          address: redfish-virtualmedia://{{ _redfish_ip }}/redfish/v1/Systems/rhcos-twonode-node2
-          username: {{ _redfish_username }}
-          password: adminpass
-          disableCertificateVerification: true
+        interfaces:
+        - name: eth1
+          macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:02:01"
 
 - name: "Student {{ _student_id }} — Generate ABI agent ISO"
   ansible.builtin.command:
