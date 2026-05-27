@@ -235,31 +235,61 @@
   register: r_iso_upload
   changed_when: r_iso_upload.rc == 0
 
-- name: "Student {{ _student_id }} — Hotplug agent ISO CDROM on node1"
-  ansible.builtin.command:
-    cmd: >-
-      virtctl addvolume rhcos-twonode-node1
-      --namespace {{ _student_ns }}
-      --volume-name agent-cdrom
-      --disk agent-iso-s{{ _student_id }}
-      --persist=false
-  environment:
-    K8S_AUTH_HOST: "{{ openshift_api_url }}"
-    K8S_AUTH_API_KEY: "{{ _ocp4_workload_retail_edge_ha_admin_token }}"
-  changed_when: true
+# Patch both VMs to add the agent ISO as a CDROM disk (bootOrder 1) before starting.
+# Using k8s patch avoids virtctl hotplug which requires the VM to already be running.
+- name: "Student {{ _student_id }} — Add agent ISO CDROM to node1 VM spec"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: rhcos-twonode-node1
+    namespace: "{{ _student_ns }}"
+    definition:
+      spec:
+        template:
+          spec:
+            domain:
+              devices:
+                disks:
+                  - name: agent-cdrom
+                    cdrom:
+                      bus: sata
+                    bootOrder: 1
+                  - name: rootdisk
+                    disk:
+                      bus: virtio
+                    bootOrder: 2
+            volumes:
+              - name: agent-cdrom
+                dataVolume:
+                  name: agent-iso-s{{ _student_id }}
 
-- name: "Student {{ _student_id }} — Hotplug agent ISO CDROM on node2"
-  ansible.builtin.command:
-    cmd: >-
-      virtctl addvolume rhcos-twonode-node2
-      --namespace {{ _student_ns }}
-      --volume-name agent-cdrom
-      --disk agent-iso-s{{ _student_id }}
-      --persist=false
-  environment:
-    K8S_AUTH_HOST: "{{ openshift_api_url }}"
-    K8S_AUTH_API_KEY: "{{ _ocp4_workload_retail_edge_ha_admin_token }}"
-  changed_when: true
+- name: "Student {{ _student_id }} — Add agent ISO CDROM to node2 VM spec"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: rhcos-twonode-node2
+    namespace: "{{ _student_ns }}"
+    definition:
+      spec:
+        template:
+          spec:
+            domain:
+              devices:
+                disks:
+                  - name: agent-cdrom
+                    cdrom:
+                      bus: sata
+                    bootOrder: 1
+                  - name: rootdisk
+                    disk:
+                      bus: virtio
+                    bootOrder: 2
+            volumes:
+              - name: agent-cdrom
+                dataVolume:
+                  name: agent-iso-s{{ _student_id }}
 
 - name: "Student {{ _student_id }} — Start node1 VM (boot from ISO)"
   kubernetes.core.k8s:
@@ -327,6 +357,54 @@
     - rhcos-twonode-node1
     - rhcos-twonode-node2
   ignore_errors: true
+
+# Remove agent ISO CDROM from VM spec before restarting (boot from installed disk).
+# Use JSON patch to remove the cdrom disk entry and restore single-disk boot.
+- name: "Student {{ _student_id }} — Remove agent ISO CDROM from node1 VM spec"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: rhcos-twonode-node1
+    namespace: "{{ _student_ns }}"
+    definition:
+      spec:
+        template:
+          spec:
+            domain:
+              devices:
+                disks:
+                  - name: rootdisk
+                    disk:
+                      bus: virtio
+                    bootOrder: 1
+            volumes:
+              - name: rootdisk
+                dataVolume:
+                  name: rhcos-twonode-node1-disk
+
+- name: "Student {{ _student_id }} — Remove agent ISO CDROM from node2 VM spec"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: rhcos-twonode-node2
+    namespace: "{{ _student_ns }}"
+    definition:
+      spec:
+        template:
+          spec:
+            domain:
+              devices:
+                disks:
+                  - name: rootdisk
+                    disk:
+                      bus: virtio
+                    bootOrder: 1
+            volumes:
+              - name: rootdisk
+                dataVolume:
+                  name: rhcos-twonode-node2-disk
 
 - name: "Student {{ _student_id }} — Restart VMs (boot from installed disk)"
   kubernetes.core.k8s:
