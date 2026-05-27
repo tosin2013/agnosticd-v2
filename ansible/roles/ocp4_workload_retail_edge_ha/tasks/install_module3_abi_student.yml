@@ -257,6 +257,9 @@
           app.kubernetes.io/part-of: retail-edge-ha-workshop
           module: module3
           student-id: "{{ _student_id }}"
+        annotations:
+          # Same as the upload DV: force immediate PVC binding on WaitForFirstConsumer SC.
+          cdi.kubevirt.io/storage.bind.immediate.requested: "true"
       spec:
         source:
           pvc:
