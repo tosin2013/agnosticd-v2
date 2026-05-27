@@ -359,144 +359,10 @@
       spec:
         runStrategy: Always
 
-- name: "Student {{ _student_id }} — Wait for OCP two-node installation to complete (≈60 min)"
-  ansible.builtin.command:
-    cmd: "{{ r_abi_temp.path }}/openshift-install agent wait-for install-complete --dir {{ _abi_work_dir }} --log-level=info"
-  register: r_abi_install_complete
-  changed_when: false
-  # ABI installation takes 45-75 minutes for two-node OCP.
-  # Run synchronously (no async) — async job files don't persist reliably in the EE.
-  timeout: 7200
-
-- name: "Student {{ _student_id }} — Print installation result"
-  ansible.builtin.debug:
-    msg:
-      - "Two-node OCP installation complete for student {{ _student_id }}"
-      - "API URL: https://api.twonode-s{{ _student_id }}.{{ _twonode_base_domain }}:6443"
-      - "kubeconfig: {{ _abi_work_dir }}/auth/kubeconfig"
-
-- name: "Student {{ _student_id }} — Stop VMs (prepare for CDROM removal)"
-  kubernetes.core.k8s:
-    state: patched
-    api_version: kubevirt.io/v1
-    kind: VirtualMachine
-    name: "{{ item }}"
-    namespace: "{{ _student_ns }}"
-    definition:
-      spec:
-        runStrategy: Halted
-  loop:
-    - rhcos-twonode-node1
-    - rhcos-twonode-node2
-
-- name: "Student {{ _student_id }} — Wait for VMs to stop"
-  kubernetes.core.k8s_info:
-    api_version: kubevirt.io/v1
-    kind: VirtualMachineInstance
-    name: "{{ item }}"
-    namespace: "{{ _student_ns }}"
-  register: r_vmi_stopped
-  retries: 30
-  delay: 10
-  until: r_vmi_stopped.resources | length == 0
-  loop:
-    - rhcos-twonode-node1
-    - rhcos-twonode-node2
-  ignore_errors: true
-
-# Remove agent ISO CDROM from VM spec before restarting (boot from installed disk).
-# Use JSON patch to remove the cdrom disk entry and restore single-disk boot.
-- name: "Student {{ _student_id }} — Remove agent ISO CDROM from node1 VM spec"
-  kubernetes.core.k8s:
-    state: patched
-    api_version: kubevirt.io/v1
-    kind: VirtualMachine
-    name: rhcos-twonode-node1
-    namespace: "{{ _student_ns }}"
-    definition:
-      spec:
-        template:
-          spec:
-            domain:
-              devices:
-                disks:
-                  - name: rootdisk
-                    disk:
-                      bus: virtio
-                    bootOrder: 1
-            volumes:
-              - name: rootdisk
-                dataVolume:
-                  name: rhcos-twonode-node1-disk
-              - name: cloudinitdisk
-                cloudInitNoCloud:
-                  networkData: |
-                    version: 2
-                    ethernets:
-                      eth1:
-                        addresses:
-                        - 10.103.0.10/24
-
-- name: "Student {{ _student_id }} — Remove agent ISO CDROM from node2 VM spec"
-  kubernetes.core.k8s:
-    state: patched
-    api_version: kubevirt.io/v1
-    kind: VirtualMachine
-    name: rhcos-twonode-node2
-    namespace: "{{ _student_ns }}"
-    definition:
-      spec:
-        template:
-          spec:
-            domain:
-              devices:
-                disks:
-                  - name: rootdisk
-                    disk:
-                      bus: virtio
-                    bootOrder: 1
-            volumes:
-              - name: rootdisk
-                dataVolume:
-                  name: rhcos-twonode-node2-disk
-              - name: cloudinitdisk
-                cloudInitNoCloud:
-                  networkData: |
-                    version: 2
-                    ethernets:
-                      eth1:
-                        addresses:
-                        - 10.103.0.11/24
-
-- name: "Student {{ _student_id }} — Restart VMs (boot from installed disk)"
-  kubernetes.core.k8s:
-    state: patched
-    api_version: kubevirt.io/v1
-    kind: VirtualMachine
-    name: "{{ item }}"
-    namespace: "{{ _student_ns }}"
-    definition:
-      spec:
-        runStrategy: Always
-  loop:
-    - rhcos-twonode-node1
-    - rhcos-twonode-node2
-
-# Re-enable ArgoCD auto-sync after installation. The VMs are now running OCP.
-# ArgoCD will see the VMs as OutOfSync (runStrategy: Always vs Halted in Git)
-# but since selfHeal=true it will try to stop them again. So we leave sync paused
-# and rely on manual sync for day-2 operations on the two-node OCP cluster.
-# This is intentional for the workshop PoC: VMs must stay running as OCP nodes.
-- name: "Student {{ _student_id }} — Leave ArgoCD sync paused for vms-module3 (VMs are OCP nodes)"
-  ansible.builtin.debug:
-    msg: >-
-      ArgoCD auto-sync for retail-edge-ha-vms-module3 remains paused.
-      The two-node OCP VMs are now running as cluster nodes.
-      Manual ArgoCD sync would stop the VMs (Git has runStrategy: Halted).
-      To re-enable: oc patch application retail-edge-ha-vms-module3 -n openshift-gitops
-      --type merge -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
-
-- name: "Student {{ _student_id }} — Store kubeconfig as Secret in student namespace"
+# The ABI kubeconfig is generated at 'openshift-install agent create image' time,
+# so it is available immediately after ISO generation — before installation completes.
+# Save it to a Secret now so students can access the cluster once it's ready.
+- name: "Student {{ _student_id }} — Save ABI kubeconfig and password to Secret"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -512,4 +378,56 @@
       stringData:
         kubeconfig: "{{ lookup('file', _abi_work_dir + '/auth/kubeconfig') }}"
         kubeadmin-password: "{{ lookup('file', _abi_work_dir + '/auth/kubeadmin-password') }}"
+        api-url: "https://api.twonode-s{{ _student_id }}.{{ _twonode_base_domain }}:6443"
+
+# The 'openshift-install agent wait-for install-complete' command connects to the
+# rendezvous host at 10.103.0.10 — an IP on the UDN (twonode-mgmt) which is a
+# namespace-scoped L2 network unreachable from the bastion/EE container.
+# Instead, we start the VMs and let ABI run autonomously in the background.
+# The installation completes in ~60 minutes without active monitoring.
+- name: "Student {{ _student_id }} — ABI installation running in background"
+  ansible.builtin.debug:
+    msg:
+      - "Student {{ _student_id }}: Two-node OCP ABI installation has started."
+      - "VMs {{ _student_ns }}/rhcos-twonode-node{1,2} are booting from the agent ISO."
+      - "Installation completes in ~60 minutes autonomously."
+      - "API: https://api.twonode-s{{ _student_id }}.{{ _twonode_base_domain }}:6443"
+      - "kubeconfig saved to Secret twonode-kubeconfig in {{ _student_ns }}"
+      - "NOTE: CDROM will NOT be automatically removed — remove after install completes."
+
+# Skip stop/CDROM-removal/restart tasks — the VMs are running the install autonomously.
+# After ~60 min, students should manually remove CDROM and reboot from installed disk,
+# OR the fencing workshop instructions will guide them through that process.
+
+- name: "Student {{ _student_id }} — Stop VMs (prepare for CDROM removal)"
+  when: false
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ item }}"
+    namespace: "{{ _student_ns }}"
+    definition:
+      spec:
+        runStrategy: Halted
+  loop:
+    - rhcos-twonode-node1
+    - rhcos-twonode-node2
+
+# All post-install tasks below are skipped — installation runs autonomously.
+# After ~60 min: manually remove CDROM and reboot from rootdisk, or follow workshop docs.
+- name: "Student {{ _student_id }} — (skipped) Wait for VMs to stop"
+  when: false
+  ansible.builtin.debug:
+    msg: "skipped"
+
+- name: "Student {{ _student_id }} — (skipped) Remove agent ISO CDROM"
+  when: false
+  ansible.builtin.debug:
+    msg: "skipped"
+
+- name: "Student {{ _student_id }} — (skipped) Restart VMs after install"
+  when: false
+  ansible.builtin.debug:
+    msg: "skipped"
         api-url: "https://api.twonode-s{{ _student_id }}.{{ _twonode_base_domain }}:6443"
