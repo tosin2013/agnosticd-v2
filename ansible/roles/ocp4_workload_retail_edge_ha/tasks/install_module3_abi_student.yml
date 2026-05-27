@@ -213,12 +213,10 @@
       virtctl image-upload dv agent-iso-s{{ _student_id }}
       --namespace {{ _student_ns }}
       --image-path {{ _abi_work_dir }}/agent.x86_64.iso
+      --server {{ openshift_api_url }}
+      --bearer-token {{ _ocp4_workload_retail_edge_ha_admin_token }}
       --insecure
       --wait-secs=300
-  environment:
-    KUBECONFIG: ""
-    K8S_AUTH_HOST: "{{ openshift_api_url }}"
-    K8S_AUTH_API_KEY: "{{ _ocp4_workload_retail_edge_ha_admin_token }}"
   register: r_iso_upload
   changed_when: r_iso_upload.rc == 0
 
