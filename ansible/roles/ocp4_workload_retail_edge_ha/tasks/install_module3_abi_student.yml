@@ -236,7 +236,8 @@
   changed_when: r_iso_upload.rc == 0
 
 # Patch both VMs to add the agent ISO as a CDROM disk (bootOrder 1) before starting.
-# Using k8s patch avoids virtctl hotplug which requires the VM to already be running.
+# The patch must include ALL existing disks/volumes because strategic merge patch
+# on CRDs replaces the entire array. We preserve rootdisk and cloudinitdisk entries.
 - name: "Student {{ _student_id }} — Add agent ISO CDROM to node1 VM spec"
   kubernetes.core.k8s:
     state: patched
@@ -263,6 +264,17 @@
               - name: agent-cdrom
                 dataVolume:
                   name: agent-iso-s{{ _student_id }}
+              - name: rootdisk
+                dataVolume:
+                  name: rhcos-twonode-node1-disk
+              - name: cloudinitdisk
+                cloudInitNoCloud:
+                  networkData: |
+                    version: 2
+                    ethernets:
+                      eth1:
+                        addresses:
+                        - 10.103.0.10/24
 
 - name: "Student {{ _student_id }} — Add agent ISO CDROM to node2 VM spec"
   kubernetes.core.k8s:
@@ -290,6 +302,17 @@
               - name: agent-cdrom
                 dataVolume:
                   name: agent-iso-s{{ _student_id }}
+              - name: rootdisk
+                dataVolume:
+                  name: rhcos-twonode-node2-disk
+              - name: cloudinitdisk
+                cloudInitNoCloud:
+                  networkData: |
+                    version: 2
+                    ethernets:
+                      eth1:
+                        addresses:
+                        - 10.103.0.11/24
 
 - name: "Student {{ _student_id }} — Start node1 VM (boot from ISO)"
   kubernetes.core.k8s:
@@ -382,6 +405,14 @@
               - name: rootdisk
                 dataVolume:
                   name: rhcos-twonode-node1-disk
+              - name: cloudinitdisk
+                cloudInitNoCloud:
+                  networkData: |
+                    version: 2
+                    ethernets:
+                      eth1:
+                        addresses:
+                        - 10.103.0.10/24
 
 - name: "Student {{ _student_id }} — Remove agent ISO CDROM from node2 VM spec"
   kubernetes.core.k8s:
@@ -405,6 +436,14 @@
               - name: rootdisk
                 dataVolume:
                   name: rhcos-twonode-node2-disk
+              - name: cloudinitdisk
+                cloudInitNoCloud:
+                  networkData: |
+                    version: 2
+                    ethernets:
+                      eth1:
+                        addresses:
+                        - 10.103.0.11/24
 
 - name: "Student {{ _student_id }} — Restart VMs (boot from installed disk)"
   kubernetes.core.k8s:
