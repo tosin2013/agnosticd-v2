@@ -214,7 +214,7 @@
       --namespace {{ _student_ns }}
       --image-path {{ _abi_work_dir }}/agent.x86_64.iso
       --server {{ openshift_api_url }}
-      --bearer-token {{ _ocp4_workload_retail_edge_ha_admin_token }}
+      --token {{ _ocp4_workload_retail_edge_ha_admin_token }}
       --insecure
       --wait-secs=300
   register: r_iso_upload
