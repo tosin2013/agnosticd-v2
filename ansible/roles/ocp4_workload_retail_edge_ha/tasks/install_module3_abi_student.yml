@@ -341,9 +341,9 @@
     cmd: "{{ r_abi_temp.path }}/openshift-install agent wait-for install-complete --dir {{ _abi_work_dir }} --log-level=info"
   register: r_abi_install_complete
   changed_when: false
-  # ABI installation takes 45-75 minutes for two-node OCP
-  async: 7200
-  poll: 30
+  # ABI installation takes 45-75 minutes for two-node OCP.
+  # Run synchronously (no async) — async job files don't persist reliably in the EE.
+  timeout: 7200
 
 - name: "Student {{ _student_id }} — Print installation result"
   ansible.builtin.debug:
