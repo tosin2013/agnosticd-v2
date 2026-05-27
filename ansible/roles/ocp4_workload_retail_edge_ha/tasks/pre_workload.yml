@@ -58,9 +58,26 @@
   register: r_rhacm_operator
   failed_when: false
 
+- name: Check for MultiClusterHub instance
+  kubernetes.core.k8s_info:
+    api_version: operator.open-cluster-management.io/v1
+    kind: MultiClusterHub
+    name: multiclusterhub
+    namespace: open-cluster-management
+  register: r_multiclusterhub
+  failed_when: false
+
 - name: Set RHACM installation status fact
   ansible.builtin.set_fact:
-    rhacm_installed: "{{ r_rhacm_operator.resources | length > 0 and r_rhacm_operator.resources[0].status.phase == 'Succeeded' }}"
+    rhacm_installed: >-
+      {{
+        r_rhacm_operator.resources | length > 0 and
+        r_rhacm_operator.resources[0].status.phase == 'Succeeded' and
+        r_multiclusterhub.resources | length > 0 and
+        r_multiclusterhub.resources[0].status is defined and
+        r_multiclusterhub.resources[0].status.phase is defined and
+        r_multiclusterhub.resources[0].status.phase == 'Running'
+      }}
 
 - name: Set RHACM required flag (fleet management or Module 3 Assisted Installer)
   ansible.builtin.set_fact:
@@ -132,6 +149,29 @@
   ansible.builtin.debug:
     msg: "OpenShift Virtualization operator found and ready"
   when: cnv_installed
+
+- name: Check for MetalLB operator
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    namespace: metallb-system
+  register: r_metallb_operator
+  failed_when: false
+
+- name: Set MetalLB installation status fact
+  ansible.builtin.set_fact:
+    metallb_installed: "{{ r_metallb_operator.resources | length > 0 and r_metallb_operator.resources | selectattr('status.phase', 'equalto', 'Succeeded') | list | length > 0 }}"
+
+- name: Install MetalLB if not present and auto-install enabled
+  ansible.builtin.include_tasks: install_metallb.yml
+  when:
+    - not metallb_installed
+    - ocp4_workload_retail_edge_ha_auto_install_metallb | bool
+
+- name: Confirm MetalLB operator is ready
+  ansible.builtin.debug:
+    msg: "MetalLB operator found and ready"
+  when: metallb_installed
 
 - name: Install OpenShift GitOps operator and wait for ArgoCD CRDs
   ansible.builtin.include_tasks: install_gitops.yml

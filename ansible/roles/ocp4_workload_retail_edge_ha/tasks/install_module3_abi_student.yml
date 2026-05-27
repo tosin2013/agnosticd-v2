@@ -210,7 +210,7 @@
 - name: "Student {{ _student_id }} — Upload agent ISO via CDI upload proxy"
   ansible.builtin.command:
     cmd: >-
-      virtctl image-upload dv agent-iso-s{{ _student_id }}
+      {{ r_abi_temp.path }}/virtctl image-upload dv agent-iso-s{{ _student_id }}
       --namespace {{ _student_ns }}
       --image-path {{ _abi_work_dir }}/agent.x86_64.iso
       --server {{ openshift_api_url }}

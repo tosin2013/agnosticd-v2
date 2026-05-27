@@ -2,6 +2,44 @@
 - name: Running pre-workload validation tasks
   ansible.builtin.include_tasks: pre_workload.yml
 
+# Pre-create and label all namespaces that ArgoCD will manage BEFORE the Helm
+# chart install. ArgoCD begins syncing apps immediately on creation; without
+# the argocd.argoproj.io/managed-by label the ArgoCD SA has no RBAC in those
+# namespaces, causing the first 5 sync attempts to fail (exhausting the retry
+# limit) before Ansible's later labeling task can run.
+- name: Pre-create and label showroom namespaces for ArgoCD RBAC
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ item }}"
+        labels:
+          argocd.argoproj.io/managed-by: openshift-gitops
+  loop: >-
+    {{ range(1, (num_users | int) + 1)
+       | map('int') | list
+       | map('string')
+       | map('regex_replace', '^(\d)$', '0\1')
+       | map('regex_replace', '^(.+)$', 'showroom-student-\1')
+       | list }}
+
+- name: Pre-create and label workload namespaces for ArgoCD RBAC
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ item }}"
+        labels:
+          argocd.argoproj.io/managed-by: openshift-gitops
+  loop:
+    - retail-edge-ha-gitops
+    - retail-edge-infrastructure
+    - "{{ ocp4_workload_retail_edge_ha_build_namespace }}"
+
 - name: Create temporary directory for workshop files
   ansible.builtin.tempfile:
     state: directory
@@ -71,6 +109,44 @@
 - name: Print Helm installation status
   ansible.builtin.debug:
     msg: "Helm chart {{ ocp4_workload_retail_edge_ha_release_name }} deployed successfully"
+
+- name: Build list of all workshop namespaces to label for ArgoCD access
+  ansible.builtin.set_fact:
+    _argocd_managed_namespaces: >-
+      {{
+        ['retail-edge-ha-gitops', 'retail-edge-infrastructure', 'retail-edge-workshop-builds']
+        + range(1, (num_users | int) + 1)
+          | map('int') | list
+          | map('string')
+          | map('regex_replace', '^(\d)$', '0\1')
+          | map('regex_replace', '^(.+)$', 'showroom-student-\1')
+          | list
+        + range(1, (num_users | int) + 1)
+          | map('int') | list
+          | map('string')
+          | map('regex_replace', '^(\d)$', '0\1')
+          | map('regex_replace', '^(.+)$', 'retail-edge-student-\1')
+          | list
+        + range(1, (num_users | int) + 1)
+          | map('int') | list
+          | map('string')
+          | map('regex_replace', '^(\d)$', '0\1')
+          | map('regex_replace', '^(.+)$', 'retail-edge-student-\1-udn')
+          | list
+      }}
+
+- name: Label workshop namespaces as managed by openshift-gitops (grants ArgoCD SA admin access)
+  kubernetes.core.k8s:
+    state: patched
+    api_version: v1
+    kind: Namespace
+    name: "{{ item }}"
+    definition:
+      metadata:
+        labels:
+          argocd.argoproj.io/managed-by: openshift-gitops
+  loop: "{{ _argocd_managed_namespaces }}"
+  ignore_errors: true
 
 - name: Patch ArgoCD CR to treat stopped VMs as Healthy (resourceHealthChecks)
   kubernetes.core.k8s:
@@ -416,6 +492,19 @@
 - name: Workload deployment complete
   ansible.builtin.debug:
     msg: "Workshop deployment initiated successfully. Resources are being synchronized by ArgoCD."
+
+# ---------------------------------------------------------------------------
+# Module 3: Two-Node OCP ABI installation (optional, PoC)
+# Runs only when module3 is enabled AND a pull secret is configured.
+# This is a long-running task (45-75 min per student). Run separately or
+# increase the agd timeout accordingly.
+# ---------------------------------------------------------------------------
+- name: Run Module 3 ABI installation (two-node OCP on KubeVirt)
+  ansible.builtin.include_tasks: install_module3_abi.yml
+  when:
+    - ocp4_workload_retail_edge_ha_enable_module3 | bool
+    - ocp4_workload_retail_edge_ha_pull_secret | default('') | length > 0
+    - ocp4_workload_retail_edge_ha_run_abi | default(false) | bool
 
 - name: Running post-workload validation tasks
   ansible.builtin.include_tasks: post_workload.yml

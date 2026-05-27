@@ -1,0 +1,186 @@
+---
+# =============================================================================
+# Module 3: Two-Node OCP Agent-Based Installer (PoC)
+# =============================================================================
+# This task runs the OpenShift Agent-Based Installer (ABI) to deploy a
+# two-node OCP cluster inside KubeVirt VMs on the CNV hub.
+#
+# UNSUPPORTED PROOF OF CONCEPT:
+#   - fakefish-kubevirt is not an officially supported Redfish BMC implementation
+#   - Two-node OCP fencing with featureSet:TechPreviewNoUpgrade is TP only
+#   - Nested virtualization is not officially supported on OCP
+#
+# Prerequisites (from ArgoCD sync — vms-module3 app):
+#   - RHCOS VMs exist in Halted state with empty 120Gi disks
+#   - fakefish Deployments are running and healthy (MetalLB IPs assigned)
+#   - twonode-mgmt UDN is active in each student namespace
+#
+# Flow per student:
+#   1. Download openshift-install binary (OCP 4.22+ required for DualReplica ABI fix)
+#   2. Generate SSH keypair for cluster access
+#   3. Generate install-config.yaml (platform: none, TechPreviewNoUpgrade)
+#   4. Generate agent-config.yaml (BMC = fakefish MetalLB IPs)
+#   5. Run: openshift-install agent create image → agent.x86_64.iso
+#   6. Import ISO as DataVolume in student namespace
+#   7. Hotplug ISO as CDROM to both RHCOS VMs
+#   8. Start VMs (boot from CDROM)
+#   9. Wait for install to complete (≈ 60 min for two-node OCP)
+#  10. Unplug CDROM, reboot VMs to installed OCP
+#
+# Variables expected:
+#   ocp4_workload_retail_edge_ha_pull_secret       — OpenShift pull secret (JSON)
+#   ocp4_workload_retail_edge_ha_twonode_ocp_version — OCP version (default 4.22; min 4.22 for DualReplica ABI fix)
+#   ocp4_workload_retail_edge_ha_twonode_ocp_channel — OCP channel (default 'candidate'; use 'stable' once 4.22 GA)
+#   num_users                                       — number of students
+# =============================================================================
+
+- name: Create temp directory for ABI workspace
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: retail-edge-abi-
+  register: r_abi_temp
+
+- name: Determine OCP release version for openshift-install download
+  ansible.builtin.set_fact:
+    # OCP 4.22+ is required: 4.21.x has a bug where the ABI validator rejects
+    # controlPlane.replicas: 2 even with featureSet: TechPreviewNoUpgrade.
+    # The DualReplica feature gate is only properly handled in 4.22+.
+    # Use candidate-4.22 until stable-4.22 is available.
+    _abi_ocp_version: "{{ ocp4_workload_retail_edge_ha_twonode_ocp_version | default('4.22') }}"
+    _abi_ocp_channel: "{{ ocp4_workload_retail_edge_ha_twonode_ocp_channel | default('candidate') }}"
+
+- name: Download openshift-install binary for OCP {{ _abi_ocp_channel }}-{{ _abi_ocp_version }}
+  ansible.builtin.unarchive:
+    src: "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/{{ _abi_ocp_channel }}-{{ _abi_ocp_version }}/openshift-install-linux.tar.gz"
+    dest: "{{ r_abi_temp.path }}"
+    remote_src: true
+    creates: "{{ r_abi_temp.path }}/openshift-install"
+    mode: '0755'
+
+# virtctl is required to upload the agent ISO to the CDI upload proxy.
+# The EE container does not include virtctl, so we download it from the
+# cluster's own ConsoleCLIDownload endpoint (matches the installed CNV version).
+- name: Get virtctl download URL from cluster ConsoleCLIDownload
+  kubernetes.core.k8s_info:
+    api_version: console.openshift.io/v1
+    kind: ConsoleCLIDownload
+    name: virtctl-clidownloads-kubevirt-hyperconverged
+  register: r_virtctl_clidownload
+  environment:
+    K8S_AUTH_HOST: "{{ openshift_api_url }}"
+    K8S_AUTH_API_KEY: "{{ _ocp4_workload_retail_edge_ha_admin_token }}"
+    K8S_AUTH_VERIFY_SSL: "false"
+
+- name: Set virtctl download URL (Linux x86_64)
+  ansible.builtin.set_fact:
+    _virtctl_url: >-
+      {{ r_virtctl_clidownload.resources[0].spec.links
+         | selectattr('text', 'search', '[Ll]inux.*x86_64|x86_64.*[Ll]inux')
+         | map(attribute='href')
+         | first }}
+
+- name: Download virtctl binary from cluster
+  ansible.builtin.unarchive:
+    src: "{{ _virtctl_url }}"
+    dest: "{{ r_abi_temp.path }}"
+    remote_src: true
+    creates: "{{ r_abi_temp.path }}/virtctl"
+    mode: '0755'
+    validate_certs: false
+
+- name: Generate SSH keypair for two-node OCP cluster access
+  community.crypto.openssh_keypair:
+    path: "{{ r_abi_temp.path }}/id_rsa_twonode"
+    type: rsa
+    size: 4096
+    comment: "retail-edge-twonode-ocp"
+  register: r_ssh_keypair
+
+- name: Set SSH public key fact
+  ansible.builtin.set_fact:
+    _twonode_ssh_pubkey: "{{ r_ssh_keypair.public_key }}"
+
+# ---------------------------------------------------------------------------
+# Deploy kubevirt-redfish per student (KubeVirt-aware Redfish BMC emulator)
+# ---------------------------------------------------------------------------
+# kubevirt-redfish provides a Redfish API that proxies power control calls to
+# the KubeVirt API server, enabling OCP two-node fencing without a real BMC.
+# Reference: https://github.com/v1k0d3n/kubevirt-redfish
+
+- name: Add v1k0d3n Helm repository (kubevirt-redfish)
+  kubernetes.core.helm_repository:
+    name: v1k0d3n
+    repo_url: "https://v1k0d3n.github.io/charts"
+    state: present
+  environment:
+    K8S_AUTH_HOST: "{{ openshift_api_url }}"
+    K8S_AUTH_API_KEY: "{{ _ocp4_workload_retail_edge_ha_admin_token }}"
+    K8S_AUTH_VERIFY_SSL: "false"
+
+# Deploy ONE central kubevirt-redfish instance with per-student chassis entries.
+# The chart creates a cluster-scoped ClusterRole; deploying one instance avoids
+# ownership conflicts when multiple students share the same cluster.
+- name: Build kubevirt-redfish chassis list for all students
+  ansible.builtin.set_fact:
+    _redfish_chassis: >-
+      {{ _redfish_chassis | default([]) + [
+        {
+          'name': 's%02d' % item,
+          'namespace': 'retail-edge-student-%02d' % item,
+          'service_account': 'kubevirt-redfish',
+          'description': 'Student %02d KubeVirt two-node OCP VMs' % item
+        }
+      ] }}
+    _redfish_users: >-
+      {{ _redfish_users | default([]) + [
+        {
+          'username': 'admin-s%02d' % item,
+          'password': 'adminpass',
+          'chassis': ['s%02d' % item]
+        }
+      ] }}
+  loop: "{{ range(1, (num_users | int) + 1) | list }}"
+
+- name: Deploy kubevirt-redfish central instance (retail-edge-infrastructure)
+  kubernetes.core.helm:
+    name: "kubevirt-redfish"
+    chart_ref: "v1k0d3n/kubevirt-redfish"
+    chart_version: "0.2.3"
+    release_namespace: "retail-edge-infrastructure"
+    create_namespace: false
+    wait: true
+    wait_timeout: "10m"
+    values:
+      global:
+        namespace: "retail-edge-infrastructure"
+      route:
+        enabled: false
+      service:
+        type: LoadBalancer
+      serviceAnnotations:
+        metallb.universe.tf/loadBalancerIPs: "10.10.10.200"
+      chassis: "{{ _redfish_chassis }}"
+      authentication:
+        users: "{{ _redfish_users }}"
+      datavolume:
+        storage_class: "ocs-external-storagecluster-ceph-rbd-immediate"
+        allow_insecure_tls: true
+  environment:
+    K8S_AUTH_HOST: "{{ openshift_api_url }}"
+    K8S_AUTH_API_KEY: "{{ _ocp4_workload_retail_edge_ha_admin_token }}"
+    K8S_AUTH_VERIFY_SSL: "false"
+
+# ---------------------------------------------------------------------------
+# Per-student ABI installation
+# ---------------------------------------------------------------------------
+- name: Run ABI for each student
+  ansible.builtin.include_tasks: install_module3_abi_student.yml
+  loop: "{{ range(1, (num_users | int) + 1) | list }}"
+  loop_control:
+    loop_var: _student_num
+    label: "student-{{ '%02d' % _student_num }}"
+
+- name: Remove ABI temp directory
+  ansible.builtin.file:
+    path: "{{ r_abi_temp.path }}"
+    state: absent

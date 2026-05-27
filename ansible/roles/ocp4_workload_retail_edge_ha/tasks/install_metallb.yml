@@ -1,0 +1,107 @@
+---
+# Install MetalLB operator and configure an IPAddressPool + L2Advertisement
+# This task file is included from pre_workload.yml when auto_install_metallb is enabled
+
+- name: Create metallb-system namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: metallb-system
+    state: present
+
+- name: Create OperatorGroup for MetalLB
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: metallb-operator-og
+        namespace: metallb-system
+      spec: {}
+
+- name: Subscribe to MetalLB operator
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: metallb-operator
+        namespace: metallb-system
+      spec:
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+        name: metallb-operator
+        channel: "{{ ocp4_workload_retail_edge_ha_metallb_channel }}"
+        installPlanApproval: Automatic
+
+- name: Wait for MetalLB operator CSV to be Succeeded
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    namespace: metallb-system
+  register: r_metallb_csv
+  retries: 30
+  delay: 10
+  until:
+    - r_metallb_csv.resources | length > 0
+    - r_metallb_csv.resources | selectattr('status.phase', 'equalto', 'Succeeded') | list | length > 0
+
+- name: Get installed MetalLB CSV name
+  ansible.builtin.set_fact:
+    metallb_csv_name: "{{ r_metallb_csv.resources | selectattr('status.phase', 'equalto', 'Succeeded') | map(attribute='metadata.name') | first }}"
+
+- name: Create MetalLB instance
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: MetalLB
+      metadata:
+        name: metallb
+        namespace: metallb-system
+
+- name: Wait for MetalLB controller deployment to be available
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: controller
+    namespace: metallb-system
+  register: r_metallb_controller
+  retries: 30
+  delay: 10
+  until:
+    - r_metallb_controller.resources | length > 0
+    - r_metallb_controller.resources[0].status.availableReplicas is defined
+    - r_metallb_controller.resources[0].status.availableReplicas >= 1
+
+- name: Create MetalLB IPAddressPool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: IPAddressPool
+      metadata:
+        name: workshop-pool
+        namespace: metallb-system
+      spec:
+        addresses:
+          - "{{ ocp4_workload_retail_edge_ha_metallb_ip_pool }}"
+
+- name: Create MetalLB L2Advertisement
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: L2Advertisement
+      metadata:
+        name: workshop-l2
+        namespace: metallb-system
+      spec:
+        ipAddressPools:
+          - workshop-pool
+
+- name: MetalLB installation complete
+  ansible.builtin.debug:
+    msg: "MetalLB operator installed and ready ({{ metallb_csv_name }}), pool: {{ ocp4_workload_retail_edge_ha_metallb_ip_pool }}"
