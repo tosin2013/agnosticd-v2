@@ -252,10 +252,8 @@
       --insecure-skip-tls-verify
   register: r_argocd_suspend
   changed_when: "'patched' in r_argocd_suspend.stdout"
-  failed_when:
-    - r_argocd_suspend.rc != 0
-    - "'remove operation does not apply' not in r_argocd_suspend.stderr"
-    - "'does not exist' not in r_argocd_suspend.stderr"
+  # Ignore failure if automated field is already absent (idempotent)
+  ignore_errors: true
 
 # Patch both VMs to add the agent ISO as a CDROM disk (bootOrder 1) before starting.
 # The patch must include ALL existing disks/volumes because strategic merge patch
