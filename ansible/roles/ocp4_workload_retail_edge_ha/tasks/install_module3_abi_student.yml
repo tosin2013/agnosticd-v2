@@ -207,6 +207,20 @@
           accessModes:
             - ReadWriteOnce
 
+- name: "Student {{ _student_id }} — Wait for agent ISO DataVolume to be UploadReady"
+  kubernetes.core.k8s_info:
+    api_version: cdi.kubevirt.io/v1beta1
+    kind: DataVolume
+    name: agent-iso-s{{ _student_id }}
+    namespace: "{{ _student_ns }}"
+  register: r_agent_iso_dv
+  retries: 30
+  delay: 10
+  until:
+    - r_agent_iso_dv.resources | length > 0
+    - r_agent_iso_dv.resources[0].status.phase is defined
+    - r_agent_iso_dv.resources[0].status.phase == "UploadReady"
+
 - name: "Student {{ _student_id }} — Upload agent ISO via CDI upload proxy"
   ansible.builtin.command:
     cmd: >-
@@ -215,6 +229,7 @@
       --image-path {{ _abi_work_dir }}/agent.x86_64.iso
       --server {{ openshift_api_url }}
       --token {{ _ocp4_workload_retail_edge_ha_admin_token }}
+      --insecure-skip-tls-verify
       --insecure
       --wait-secs=300
   register: r_iso_upload
