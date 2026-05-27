@@ -468,4 +468,3 @@
   when: false
   ansible.builtin.debug:
     msg: "skipped"
-        api-url: "https://api.twonode-s{{ _student_id }}.{{ _twonode_base_domain }}:6443"
