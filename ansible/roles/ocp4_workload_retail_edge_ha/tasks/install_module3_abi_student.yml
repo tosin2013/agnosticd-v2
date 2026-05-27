@@ -1,0 +1,311 @@
+---
+# Per-student ABI sub-task (called from install_module3_abi.yml)
+# Loop variable: _student_num (integer, e.g. 1, 2)
+# ---------------------------------------------------------------------------
+
+- name: Set per-student facts
+  ansible.builtin.set_fact:
+    _student_id: "{{ '%02d' % _student_num }}"
+    _student_ns: "retail-edge-student-{{ '%02d' % _student_num }}"
+    # Central kubevirt-redfish instance at 10.10.10.200 manages all student namespaces.
+    # Per-student authentication username differentiates chassis access.
+    _redfish_ip: "10.10.10.200"
+    _redfish_username: "admin-s{{ '%02d' % _student_num }}"
+    _abi_work_dir: "{{ r_abi_temp.path }}/student-{{ '%02d' % _student_num }}"
+    _twonode_api_vip: "10.103.0.100"
+    _twonode_ingress_vip: "10.103.0.101"
+    _twonode_base_domain: "s{{ '%02d' % _student_num }}.cluster-4qn44.dynamic2.redhatworkshops.io"
+
+- name: "Student {{ _student_id }} — Create ABI work directory"
+  ansible.builtin.file:
+    path: "{{ _abi_work_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: "Student {{ _student_id }} — Wait for central kubevirt-redfish LoadBalancer IP"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    label_selectors:
+      - "app.kubernetes.io/name=kubevirt-redfish"
+    namespace: "retail-edge-infrastructure"
+  register: r_redfish_svc
+  retries: 30
+  delay: 10
+  until:
+    - r_redfish_svc.resources | length > 0
+    - r_redfish_svc.resources[0].status.loadBalancer.ingress is defined
+    - r_redfish_svc.resources[0].status.loadBalancer.ingress | length > 0
+
+- name: "Student {{ _student_id }} — Write install-config.yaml"
+  ansible.builtin.copy:
+    dest: "{{ _abi_work_dir }}/install-config.yaml"
+    mode: '0644'
+    content: |
+      apiVersion: v1
+      baseDomain: {{ _twonode_base_domain }}
+      metadata:
+        name: twonode-s{{ _student_id }}
+      featureSet: TechPreviewNoUpgrade
+      compute:
+      - hyperthreading: Enabled
+        name: worker
+        replicas: 0
+      controlPlane:
+        hyperthreading: Enabled
+        name: master
+        replicas: 2
+        fencing:
+          credentials:
+          - hostname: node1
+            address: https://{{ _redfish_ip }}/redfish/v1/Systems/rhcos-twonode-node1
+            username: {{ _redfish_username }}
+            password: adminpass
+            certificateVerification: Disabled
+          - hostname: node2
+            address: https://{{ _redfish_ip }}/redfish/v1/Systems/rhcos-twonode-node2
+            username: {{ _redfish_username }}
+            password: adminpass
+            certificateVerification: Disabled
+      networking:
+        clusterNetwork:
+        - cidr: 10.128.0.0/14
+          hostPrefix: 23
+        machineNetwork:
+        - cidr: 10.103.0.0/24
+        serviceNetwork:
+        - 172.30.0.0/16
+        networkType: OVNKubernetes
+      platform:
+        none: {}
+      fips: false
+      pullSecret: '{{ ocp4_workload_retail_edge_ha_pull_secret }}'
+      sshKey: '{{ _twonode_ssh_pubkey }}'
+
+- name: "Student {{ _student_id }} — Write agent-config.yaml"
+  ansible.builtin.copy:
+    dest: "{{ _abi_work_dir }}/agent-config.yaml"
+    mode: '0644'
+    content: |
+      apiVersion: v1alpha1
+      kind: AgentConfig
+      metadata:
+        name: twonode-s{{ _student_id }}
+      rendezvousIP: 10.103.0.10
+      additionalNTPSources:
+      - time.cloudflare.com
+      hosts:
+      - hostname: node1
+        role: master
+        interfaces:
+        - name: eth1
+          macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:01:01"
+        networkConfig:
+          interfaces:
+          - name: eth1
+            type: ethernet
+            state: up
+            ipv4:
+              enabled: true
+              address:
+              - ip: 10.103.0.10
+                prefix-length: 24
+              dhcp: false
+        bmc:
+          address: redfish-virtualmedia://{{ _redfish_ip }}/redfish/v1/Systems/rhcos-twonode-node1
+          username: {{ _redfish_username }}
+          password: adminpass
+          disableCertificateVerification: true
+        bootMode: UEFI
+      - hostname: node2
+        role: master
+        interfaces:
+        - name: eth1
+          macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:02:01"
+        networkConfig:
+          interfaces:
+          - name: eth1
+            type: ethernet
+            state: up
+            ipv4:
+              enabled: true
+              address:
+              - ip: 10.103.0.11
+                prefix-length: 24
+              dhcp: false
+        bmc:
+          address: redfish-virtualmedia://{{ _redfish_ip }}/redfish/v1/Systems/rhcos-twonode-node2
+          username: {{ _redfish_username }}
+          password: adminpass
+          disableCertificateVerification: true
+        bootMode: UEFI
+
+- name: "Student {{ _student_id }} — Generate ABI agent ISO"
+  ansible.builtin.command:
+    cmd: "{{ r_abi_temp.path }}/openshift-install agent create image --dir {{ _abi_work_dir }}"
+  register: r_abi_create_image
+  changed_when: r_abi_create_image.rc == 0
+
+- name: "Student {{ _student_id }} — Import agent ISO as DataVolume"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: agent-iso-s{{ _student_id }}
+        namespace: "{{ _student_ns }}"
+        labels:
+          app.kubernetes.io/part-of: retail-edge-ha-workshop
+          module: module3
+          student-id: "{{ _student_id }}"
+      spec:
+        source:
+          upload: {}
+        storage:
+          resources:
+            requests:
+              storage: 2Gi
+          storageClassName: ocs-external-storagecluster-ceph-rbd-immediate
+          accessModes:
+            - ReadWriteOnce
+
+- name: "Student {{ _student_id }} — Upload agent ISO via CDI upload proxy"
+  ansible.builtin.command:
+    cmd: >-
+      virtctl image-upload dv agent-iso-s{{ _student_id }}
+      --namespace {{ _student_ns }}
+      --image-path {{ _abi_work_dir }}/agent.x86_64.iso
+      --insecure
+      --wait-secs=300
+  environment:
+    KUBECONFIG: ""
+    K8S_AUTH_HOST: "{{ openshift_api_url }}"
+    K8S_AUTH_API_KEY: "{{ _ocp4_workload_retail_edge_ha_admin_token }}"
+  register: r_iso_upload
+  changed_when: r_iso_upload.rc == 0
+
+- name: "Student {{ _student_id }} — Hotplug agent ISO CDROM on node1"
+  ansible.builtin.command:
+    cmd: >-
+      virtctl addvolume rhcos-twonode-node1
+      --namespace {{ _student_ns }}
+      --volume-name agent-cdrom
+      --disk agent-iso-s{{ _student_id }}
+      --persist=false
+  environment:
+    K8S_AUTH_HOST: "{{ openshift_api_url }}"
+    K8S_AUTH_API_KEY: "{{ _ocp4_workload_retail_edge_ha_admin_token }}"
+  changed_when: true
+
+- name: "Student {{ _student_id }} — Hotplug agent ISO CDROM on node2"
+  ansible.builtin.command:
+    cmd: >-
+      virtctl addvolume rhcos-twonode-node2
+      --namespace {{ _student_ns }}
+      --volume-name agent-cdrom
+      --disk agent-iso-s{{ _student_id }}
+      --persist=false
+  environment:
+    K8S_AUTH_HOST: "{{ openshift_api_url }}"
+    K8S_AUTH_API_KEY: "{{ _ocp4_workload_retail_edge_ha_admin_token }}"
+  changed_when: true
+
+- name: "Student {{ _student_id }} — Start node1 VM (boot from ISO)"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: rhcos-twonode-node1
+    namespace: "{{ _student_ns }}"
+    definition:
+      spec:
+        runStrategy: Always
+
+- name: "Student {{ _student_id }} — Start node2 VM (boot from ISO)"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: rhcos-twonode-node2
+    namespace: "{{ _student_ns }}"
+    definition:
+      spec:
+        runStrategy: Always
+
+- name: "Student {{ _student_id }} — Wait for OCP two-node installation to complete (≈60 min)"
+  ansible.builtin.command:
+    cmd: "{{ r_abi_temp.path }}/openshift-install agent wait-for install-complete --dir {{ _abi_work_dir }} --log-level=info"
+  register: r_abi_install_complete
+  changed_when: false
+  # ABI installation takes 45-75 minutes for two-node OCP
+  async: 7200
+  poll: 30
+
+- name: "Student {{ _student_id }} — Print installation result"
+  ansible.builtin.debug:
+    msg:
+      - "Two-node OCP installation complete for student {{ _student_id }}"
+      - "API URL: https://api.twonode-s{{ _student_id }}.{{ _twonode_base_domain }}:6443"
+      - "kubeconfig: {{ _abi_work_dir }}/auth/kubeconfig"
+
+- name: "Student {{ _student_id }} — Stop VMs (prepare for CDROM removal)"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ item }}"
+    namespace: "{{ _student_ns }}"
+    definition:
+      spec:
+        runStrategy: Halted
+  loop:
+    - rhcos-twonode-node1
+    - rhcos-twonode-node2
+
+- name: "Student {{ _student_id }} — Wait for VMs to stop"
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachineInstance
+    name: "{{ item }}"
+    namespace: "{{ _student_ns }}"
+  register: r_vmi_stopped
+  retries: 30
+  delay: 10
+  until: r_vmi_stopped.resources | length == 0
+  loop:
+    - rhcos-twonode-node1
+    - rhcos-twonode-node2
+  ignore_errors: true
+
+- name: "Student {{ _student_id }} — Restart VMs (boot from installed disk)"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ item }}"
+    namespace: "{{ _student_ns }}"
+    definition:
+      spec:
+        runStrategy: Always
+  loop:
+    - rhcos-twonode-node1
+    - rhcos-twonode-node2
+
+- name: "Student {{ _student_id }} — Store kubeconfig as Secret in student namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: twonode-kubeconfig
+        namespace: "{{ _student_ns }}"
+        labels:
+          app.kubernetes.io/part-of: retail-edge-ha-workshop
+          module: module3
+      type: Opaque
+      stringData:
+        kubeconfig: "{{ lookup('file', _abi_work_dir + '/auth/kubeconfig') }}"
+        kubeadmin-password: "{{ lookup('file', _abi_work_dir + '/auth/kubeadmin-password') }}"
+        api-url: "https://api.twonode-s{{ _student_id }}.{{ _twonode_base_domain }}:6443"
