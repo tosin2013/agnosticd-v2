@@ -99,7 +99,7 @@
         role: master
         interfaces:
         - name: eth1
-          macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:01:01"
+          macAddress: "{{ _node1_mgmt_mac }}"
         bmc:
           address: redfish-virtualmedia://{{ _redfish_ip }}/redfish/v1/Systems/rhcos-twonode-node1
           username: {{ _redfish_username }}
@@ -109,7 +109,7 @@
         role: master
         interfaces:
         - name: eth1
-          macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:02:01"
+          macAddress: "{{ _node2_mgmt_mac }}"
         bmc:
           address: redfish-virtualmedia://{{ _redfish_ip }}/redfish/v1/Systems/rhcos-twonode-node2
           username: {{ _redfish_username }}
@@ -119,6 +119,45 @@
 # NMStateConfig manifests provide static network config without requiring
 # nmstatectl on the bastion. The installer includes them in the ISO and
 # the agent applies them on boot (nmstate is available in RHCOS).
+# Fetch the actual KubeVirt-assigned MAC for the twonode-mgmt interface on each VM.
+# KubeVirt auto-assigns MACs (format 02:xx:xx:xx:xx:xx) that differ from any
+# hash-based scheme. The ABI NMStateConfig and agent-config host entries MUST use
+# the real MAC so the agent correctly identifies and configures the UDN interface.
+- name: "Student {{ _student_id }} — Get VM spec for node1 (to read twonode-mgmt MAC)"
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: rhcos-twonode-node1
+    namespace: "{{ _student_ns }}"
+  register: r_node1_vm
+
+- name: "Student {{ _student_id }} — Get VM spec for node2 (to read twonode-mgmt MAC)"
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: rhcos-twonode-node2
+    namespace: "{{ _student_ns }}"
+  register: r_node2_vm
+
+- name: "Student {{ _student_id }} — Set twonode-mgmt MAC address facts"
+  ansible.builtin.set_fact:
+    _node1_mgmt_mac: >-
+      {{ r_node1_vm.resources[0].spec.template.spec.domain.devices.interfaces
+         | selectattr('name', 'equalto', 'twonode-mgmt')
+         | map(attribute='macAddress')
+         | first }}
+    _node2_mgmt_mac: >-
+      {{ r_node2_vm.resources[0].spec.template.spec.domain.devices.interfaces
+         | selectattr('name', 'equalto', 'twonode-mgmt')
+         | map(attribute='macAddress')
+         | first }}
+
+- name: "Student {{ _student_id }} — Debug: actual twonode-mgmt MACs"
+  ansible.builtin.debug:
+    msg:
+      - "node1 twonode-mgmt MAC: {{ _node1_mgmt_mac }}"
+      - "node2 twonode-mgmt MAC: {{ _node2_mgmt_mac }}"
+
 - name: "Student {{ _student_id }} — Create cluster-manifests directory"
   ansible.builtin.file:
     path: "{{ _abi_work_dir }}/cluster-manifests"
@@ -149,7 +188,7 @@
               dhcp: false
         interfaces:
         - name: eth1
-          macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:01:01"
+          macAddress: "{{ _node1_mgmt_mac }}"
 
 - name: "Student {{ _student_id }} — Write NMStateConfig for node2"
   ansible.builtin.copy:
@@ -175,7 +214,7 @@
               dhcp: false
         interfaces:
         - name: eth1
-          macAddress: "52:54:00:{{ _student_num | int | to_json | hash('md5') | truncate(2, true, '') }}:02:01"
+          macAddress: "{{ _node2_mgmt_mac }}"
 
 - name: "Student {{ _student_id }} — Generate ABI agent ISO"
   ansible.builtin.command:
