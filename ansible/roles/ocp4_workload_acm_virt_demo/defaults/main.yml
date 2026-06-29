@@ -1,0 +1,21 @@
+---
+ocp4_workload_acm_virt_demo_git_repo: "https://github.com/tosin2013/acm-virt-management-demo.git"
+ocp4_workload_acm_virt_demo_git_ref: main
+
+ocp4_workload_acm_virt_demo_policy_namespace: open-cluster-management-policies
+
+ocp4_workload_acm_virt_demo_managed_cluster_label_key: virtualization-enabled
+ocp4_workload_acm_virt_demo_managed_cluster_label_value: "true"
+
+ocp4_workload_acm_virt_demo_vm_namespaces:
+  - vm-production
+  - vm-staging
+
+ocp4_workload_acm_virt_demo_demo_user: demo-operator
+ocp4_workload_acm_virt_demo_vm_operators_group: vm-operators
+
+ocp4_workload_acm_virt_demo_enable_right_sizing_policy: true
+ocp4_workload_acm_virt_demo_enable_backup_policy: true
+ocp4_workload_acm_virt_demo_enable_nondestructive_rbac: true
+ocp4_workload_acm_virt_demo_enable_cluster_permission: true
+ocp4_workload_acm_virt_demo_enable_subscription_admin: true

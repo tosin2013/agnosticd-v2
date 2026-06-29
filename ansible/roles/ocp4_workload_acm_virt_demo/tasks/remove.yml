@@ -1,0 +1,75 @@
+---
+- name: Remove subscription-admin binding
+  kubernetes.core.k8s:
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    name: gitops-subscription-admin
+  ignore_errors: true
+
+- name: Remove non-destructive operator binding
+  kubernetes.core.k8s:
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    name: rhacm-nondestructive-operator-binding
+  ignore_errors: true
+
+- name: Remove non-destructive operator ClusterRole
+  kubernetes.core.k8s:
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    name: rhacm-nondestructive-operator
+  ignore_errors: true
+
+- name: Remove ClusterPermission for VM editors
+  kubernetes.core.k8s:
+    state: absent
+    api_version: rbac.open-cluster-management.io/v1alpha1
+    kind: ClusterPermission
+    name: vm-editor-permission
+    namespace: managed-cluster-01
+  ignore_errors: true
+
+- name: Remove placement bindings
+  kubernetes.core.k8s:
+    state: absent
+    api_version: policy.open-cluster-management.io/v1
+    kind: PlacementBinding
+    name: "{{ item }}"
+    namespace: "{{ ocp4_workload_acm_virt_demo_policy_namespace }}"
+  loop:
+    - vm-right-sizing-placement
+    - vm-backup-placement
+  ignore_errors: true
+
+- name: Remove placement
+  kubernetes.core.k8s:
+    state: absent
+    api_version: cluster.open-cluster-management.io/v1beta1
+    kind: Placement
+    name: virt-enabled-clusters
+    namespace: "{{ ocp4_workload_acm_virt_demo_policy_namespace }}"
+  ignore_errors: true
+
+- name: Remove VM policies
+  kubernetes.core.k8s:
+    state: absent
+    api_version: policy.open-cluster-management.io/v1
+    kind: Policy
+    name: "{{ item }}"
+    namespace: "{{ ocp4_workload_acm_virt_demo_policy_namespace }}"
+  loop:
+    - vm-right-sizing-metrics
+    - vm-backup-enforcement
+  ignore_errors: true
+
+- name: Remove VM namespaces
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ item }}"
+  loop: "{{ ocp4_workload_acm_virt_demo_vm_namespaces }}"
+  ignore_errors: true

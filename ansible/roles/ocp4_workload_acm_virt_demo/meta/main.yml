@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  role_name: ocp4_workload_acm_virt_demo
+  author: Tosin Akinosho
+  description: >-
+    Deploy ACM VM governance policies, RBAC manifests, and demo
+    configurations for the ACM Virtual Machine Management Showroom demo.
+  company: Red Hat
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+  platforms:
+    - name: OpenShift
+      versions:
+        - "4.16"
+  galaxy_tags:
+    - openshift
+    - rhacm
+    - virtualization
+    - kubevirt
+    - governance
+
+dependencies: []

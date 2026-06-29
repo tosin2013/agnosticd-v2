@@ -1,0 +1,96 @@
+---
+- name: Create policy namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ ocp4_workload_acm_virt_demo_policy_namespace }}"
+
+- name: Create VM namespaces on hub
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ item }}"
+  loop: "{{ ocp4_workload_acm_virt_demo_vm_namespaces }}"
+
+- name: Label managed clusters for virtualization
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cluster.open-cluster-management.io/v1
+      kind: ManagedCluster
+      metadata:
+        name: "{{ item }}"
+        labels:
+          "{{ ocp4_workload_acm_virt_demo_managed_cluster_label_key }}": "{{ ocp4_workload_acm_virt_demo_managed_cluster_label_value }}"
+  loop: "{{ query('kubernetes.core.k8s', api_version='cluster.open-cluster-management.io/v1', kind='ManagedCluster') | map(attribute='metadata.name') | list }}"
+  when: item != 'local-cluster'
+
+- name: Clone demo repository
+  ansible.builtin.git:
+    repo: "{{ ocp4_workload_acm_virt_demo_git_repo }}"
+    dest: "/tmp/acm-virt-management-demo"
+    version: "{{ ocp4_workload_acm_virt_demo_git_ref }}"
+    force: true
+
+- name: Apply VM right-sizing policy
+  kubernetes.core.k8s:
+    state: present
+    src: "/tmp/acm-virt-management-demo/policies/vm-right-sizing-policy.yaml"
+  when: ocp4_workload_acm_virt_demo_enable_right_sizing_policy
+
+- name: Apply VM backup enforcement policy
+  kubernetes.core.k8s:
+    state: present
+    src: "/tmp/acm-virt-management-demo/policies/vm-backup-enforcement-policy.yaml"
+  when: ocp4_workload_acm_virt_demo_enable_backup_policy
+
+- name: Apply placement and bindings
+  kubernetes.core.k8s:
+    state: present
+    src: "/tmp/acm-virt-management-demo/policies/placement-binding.yaml"
+
+- name: Apply non-destructive operator ClusterRole and binding
+  kubernetes.core.k8s:
+    state: present
+    src: "/tmp/acm-virt-management-demo/rbac/rhacm-nondestructive-operator-clusterrole.yaml"
+  when: ocp4_workload_acm_virt_demo_enable_nondestructive_rbac
+
+- name: Apply ClusterPermission for VM editors
+  kubernetes.core.k8s:
+    state: present
+    src: "/tmp/acm-virt-management-demo/rbac/cluster-permission-vm-edit.yaml"
+  when: ocp4_workload_acm_virt_demo_enable_cluster_permission
+
+- name: Apply subscription-admin binding for GitOps
+  kubernetes.core.k8s:
+    state: present
+    src: "/tmp/acm-virt-management-demo/rbac/subscription-admin-binding.yaml"
+  when: ocp4_workload_acm_virt_demo_enable_subscription_admin
+
+- name: Report deployment info
+  agnosticd_user_info:
+    msg: >-
+      ACM Virtual Machine Management Demo deployed successfully.
+      Hub Console: https://console-openshift-console.{{ openshift_cluster_ingress_domain }}
+      ACM Console: https://console-openshift-console.{{ openshift_cluster_ingress_domain }}/multicloud/home
+      Grafana: https://grafana-open-cluster-management-observability.{{ openshift_cluster_ingress_domain }}
+      Demo User: {{ ocp4_workload_acm_virt_demo_demo_user }}
+
+- name: Report deployment data
+  agnosticd_user_info:
+    data:
+      acm_hub_console: "https://console-openshift-console.{{ openshift_cluster_ingress_domain }}"
+      grafana_url: "https://grafana-open-cluster-management-observability.{{ openshift_cluster_ingress_domain }}"
+      openshift_cluster_ingress_domain: "{{ openshift_cluster_ingress_domain }}"
+      demo_user: "{{ ocp4_workload_acm_virt_demo_demo_user }}"
+
+- name: Clean up cloned repo
+  ansible.builtin.file:
+    path: "/tmp/acm-virt-management-demo"
+    state: absent
