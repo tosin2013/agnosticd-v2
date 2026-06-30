@@ -1,0 +1,116 @@
+---
+- name: Validate hub connection parameters
+  ansible.builtin.assert:
+    that:
+      - ocp4_workload_rhacm_import_hub_api_url | length > 0
+      - ocp4_workload_rhacm_import_hub_token | length > 0
+    fail_msg: >-
+      Hub API URL and token are required for RHACM import.
+      Set ocp4_workload_rhacm_import_hub_api_url and
+      ocp4_workload_rhacm_import_hub_token.
+
+- name: Find spoke cluster kubeconfig
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: r_kubeconfig_candidates
+  delegate_to: localhost
+  loop:
+    - "{{ hostvars.localhost.output_dir | default('/tmp') }}/openshift-cluster_{{ guid }}_kubeconfig"
+    - "{{ hostvars.localhost.output_dir | default('/tmp') }}/{{ guid }}_kubeconfig"
+    - "{{ hostvars.localhost.output_dir | default('/tmp') }}/auth/kubeconfig"
+
+- name: Set kubeconfig path
+  ansible.builtin.set_fact:
+    _rhacm_import_kubeconfig_path: >-
+      {{ r_kubeconfig_candidates.results
+         | selectattr('stat.exists', 'defined')
+         | selectattr('stat.exists')
+         | map(attribute='item')
+         | first }}
+
+- name: Get spoke cluster kubeconfig
+  ansible.builtin.slurp:
+    src: "{{ _rhacm_import_kubeconfig_path }}"
+  register: r_spoke_kubeconfig
+  delegate_to: localhost
+
+- name: Build ManagedCluster labels
+  ansible.builtin.set_fact:
+    _rhacm_import_labels: >-
+      {{ {'cloud': 'auto-detect',
+          'vendor': 'auto-detect',
+          'name': ocp4_workload_rhacm_import_cluster_name,
+          'environment': 'demo'}
+         | combine(ocp4_workload_rhacm_import_cluster_labels) }}
+
+- name: Create ManagedCluster on hub
+  kubernetes.core.k8s:
+    host: "{{ ocp4_workload_rhacm_import_hub_api_url }}"
+    api_key: "{{ ocp4_workload_rhacm_import_hub_token }}"
+    validate_certs: false
+    state: present
+    definition:
+      apiVersion: cluster.open-cluster-management.io/v1
+      kind: ManagedCluster
+      metadata:
+        name: "{{ ocp4_workload_rhacm_import_cluster_name }}"
+        labels: "{{ _rhacm_import_labels }}"
+      spec:
+        hubAcceptsClient: true
+
+- name: Ensure spoke namespace on hub
+  kubernetes.core.k8s:
+    host: "{{ ocp4_workload_rhacm_import_hub_api_url }}"
+    api_key: "{{ ocp4_workload_rhacm_import_hub_token }}"
+    validate_certs: false
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ ocp4_workload_rhacm_import_cluster_name }}"
+
+- name: Create auto-import secret on hub
+  kubernetes.core.k8s:
+    host: "{{ ocp4_workload_rhacm_import_hub_api_url }}"
+    api_key: "{{ ocp4_workload_rhacm_import_hub_token }}"
+    validate_certs: false
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: auto-import-secret
+        namespace: "{{ ocp4_workload_rhacm_import_cluster_name }}"
+      type: Opaque
+      stringData:
+        kubeconfig: "{{ r_spoke_kubeconfig.content | b64decode }}"
+
+- name: Wait for ManagedCluster to become available
+  kubernetes.core.k8s_info:
+    host: "{{ ocp4_workload_rhacm_import_hub_api_url }}"
+    api_key: "{{ ocp4_workload_rhacm_import_hub_token }}"
+    validate_certs: false
+    api_version: cluster.open-cluster-management.io/v1
+    kind: ManagedCluster
+    name: "{{ ocp4_workload_rhacm_import_cluster_name }}"
+  register: r_managed_cluster
+  until:
+    - r_managed_cluster.resources | length > 0
+    - r_managed_cluster.resources[0].status is defined
+    - r_managed_cluster.resources[0].status.conditions is defined
+    - r_managed_cluster.resources[0].status.conditions
+      | selectattr('type', 'equalto', 'ManagedClusterConditionAvailable')
+      | selectattr('status', 'equalto', 'True')
+      | list | length > 0
+  retries: "{{ ocp4_workload_rhacm_import_wait_retries }}"
+  delay: "{{ ocp4_workload_rhacm_import_wait_delay }}"
+
+- name: Report import via agnosticd_user_info
+  agnosticd.core.agnosticd_user_info:
+    msg: >-
+      Spoke cluster {{ ocp4_workload_rhacm_import_cluster_name }} imported into
+      RHACM hub at {{ ocp4_workload_rhacm_import_hub_api_url }}
+    data:
+      rhacm_managed_cluster_name: "{{ ocp4_workload_rhacm_import_cluster_name }}"
+      rhacm_hub_api_url: "{{ ocp4_workload_rhacm_import_hub_api_url }}"

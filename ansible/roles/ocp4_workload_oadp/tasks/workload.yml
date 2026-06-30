@@ -1,0 +1,67 @@
+---
+- name: Install OADP operator
+  ansible.builtin.include_role:
+    name: install_operator
+  vars:
+    install_operator_action: install
+    install_operator_name: redhat-oadp-operator
+    install_operator_csv_nameprefix: oadp-operator
+    install_operator_namespace: "{{ ocp4_workload_oadp_namespace }}"
+    install_operator_manage_namespaces:
+      - "{{ ocp4_workload_oadp_namespace }}"
+    install_operator_channel: "{{ ocp4_workload_oadp_channel }}"
+    install_operator_catalog: redhat-operators
+    install_operator_automatic_install_plan_approval: >-
+      {{ ocp4_workload_oadp_automatic_install_plan_approval | default(true) }}
+    install_operator_starting_csv: "{{ ocp4_workload_oadp_starting_csv }}"
+    install_operator_catalogsource_setup: >-
+      {{ ocp4_workload_oadp_use_catalog_snapshot | default(false) }}
+    install_operator_catalogsource_name: >-
+      {{ ocp4_workload_oadp_catalogsource_name | default('') }}
+    install_operator_catalogsource_namespace: "{{ ocp4_workload_oadp_namespace }}"
+    install_operator_catalogsource_image: >-
+      {{ ocp4_workload_oadp_catalogsource_image | default('') }}
+    install_operator_catalogsource_image_tag: >-
+      {{ ocp4_workload_oadp_catalogsource_image_tag | default('') }}
+
+- name: Wait for OADP operator deployment to be ready
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ ocp4_workload_oadp_namespace }}"
+    label_selectors:
+      - "olm.owner"
+  register: r_oadp_deployment
+  retries: 30
+  delay: 10
+  until:
+    - r_oadp_deployment.resources | length > 0
+    - r_oadp_deployment.resources[0].status.readyReplicas | default(0) | int > 0
+
+- name: Create DataProtectionApplication
+  when: ocp4_workload_oadp_create_dpa | bool
+  block:
+    - name: Apply DataProtectionApplication CR
+      kubernetes.core.k8s:
+        state: present
+        template: dpa.yaml.j2
+
+    - name: Wait for DataProtectionApplication to be reconciled
+      kubernetes.core.k8s_info:
+        api_version: oadp.openshift.io/v1alpha1
+        kind: DataProtectionApplication
+        name: "{{ ocp4_workload_oadp_dpa_name }}"
+        namespace: "{{ ocp4_workload_oadp_namespace }}"
+      register: r_dpa
+      retries: 30
+      delay: 10
+      until:
+        - r_dpa.resources | length > 0
+        - r_dpa.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'Reconciled') | selectattr('status', 'equalto', 'True') | list | length > 0
+
+- name: Save AgnosticD user data
+  agnosticd.core.agnosticd_user_info:
+    msg: "OADP operator installed in namespace {{ ocp4_workload_oadp_namespace }} (channel: {{ ocp4_workload_oadp_channel }})"
+    data:
+      oadp_namespace: "{{ ocp4_workload_oadp_namespace }}"
+      oadp_channel: "{{ ocp4_workload_oadp_channel }}"

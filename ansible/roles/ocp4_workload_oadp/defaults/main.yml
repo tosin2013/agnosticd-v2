@@ -1,0 +1,27 @@
+---
+ocp4_workload_oadp_channel: stable
+ocp4_workload_oadp_automatic_install_plan_approval: true
+ocp4_workload_oadp_starting_csv: ""
+ocp4_workload_oadp_use_catalog_snapshot: false
+ocp4_workload_oadp_catalogsource_name: ""
+ocp4_workload_oadp_catalogsource_image: ""
+ocp4_workload_oadp_catalogsource_image_tag: ""
+
+ocp4_workload_oadp_namespace: openshift-adp
+
+ocp4_workload_oadp_create_dpa: false
+
+ocp4_workload_oadp_dpa_name: dpa-1
+ocp4_workload_oadp_dpa_velero_default_plugins:
+  - openshift
+  - aws
+ocp4_workload_oadp_dpa_enable_restic: true
+
+ocp4_workload_oadp_dpa_backup_location_provider: aws
+ocp4_workload_oadp_dpa_backup_location_bucket: ""
+ocp4_workload_oadp_dpa_backup_location_region: "{{ aws_region | default('us-east-2') }}"
+ocp4_workload_oadp_dpa_backup_location_credential_name: cloud-credentials
+ocp4_workload_oadp_dpa_backup_location_credential_key: cloud
+
+ocp4_workload_oadp_dpa_snapshot_location_provider: aws
+ocp4_workload_oadp_dpa_snapshot_location_region: "{{ aws_region | default('us-east-2') }}"

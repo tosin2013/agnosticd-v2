@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  author: "Tosin Akinosho"
+  description: "RHACM Multi-Cluster Observability with S3-backed Thanos"
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+  platforms:
+    - name: OpenShift
+      versions:
+        - "4.14+"
+  galaxy_tags:
+    - openshift
+    - acm
+    - rhacm
+    - observability
+    - thanos
+
+dependencies: []

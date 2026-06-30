@@ -1,0 +1,20 @@
+apiVersion: observability.open-cluster-management.io/v1beta2
+kind: MultiClusterObservability
+metadata:
+  name: {{ ocp4_workload_rhacm_observability_mco_name }}
+spec:
+  observabilityAddonSpec: {}
+  storageConfig:
+    metricObjectStorage:
+      name: {{ ocp4_workload_rhacm_observability_thanos_secret_name }}
+      key: thanos.yaml
+    storageClass: {{ ocp4_workload_rhacm_observability_storage_class }}
+    alertmanagerStorageSize: {{ ocp4_workload_rhacm_observability_storage_size }}
+    compactStorageSize: {{ ocp4_workload_rhacm_observability_storage_size }}
+    ruleStorageSize: {{ ocp4_workload_rhacm_observability_storage_size }}
+    receiveStorageSize: {{ ocp4_workload_rhacm_observability_storage_size }}
+    storeStorageSize: {{ ocp4_workload_rhacm_observability_storage_size }}
+  retentionConfig:
+    retentionResolutionRaw: {{ ocp4_workload_rhacm_observability_retention }}
+    retentionResolution5m: {{ ocp4_workload_rhacm_observability_retention }}
+    retentionResolution1h: {{ ocp4_workload_rhacm_observability_retention }}

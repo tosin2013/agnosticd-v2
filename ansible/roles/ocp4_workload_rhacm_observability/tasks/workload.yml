@@ -1,0 +1,139 @@
+---
+# ---------------------------------------------------------------
+# RHACM Multi-Cluster Observability
+# Creates an S3 bucket, configures Thanos object storage,
+# deploys MultiClusterObservability CR, and waits for Grafana.
+# ---------------------------------------------------------------
+
+- name: Check if MultiClusterObservability already exists
+  kubernetes.core.k8s_info:
+    api_version: observability.open-cluster-management.io/v1beta2
+    kind: MultiClusterObservability
+    name: "{{ ocp4_workload_rhacm_observability_mco_name }}"
+  register: r_existing_mco
+
+- name: Deploy observability
+  when: r_existing_mco.resources | length == 0
+  block:
+
+    # --- S3 bucket ---
+
+    - name: Create S3 bucket for Thanos
+      amazon.aws.s3_bucket:
+        name: "{{ ocp4_workload_rhacm_observability_s3_bucket }}"
+        region: "{{ ocp4_workload_rhacm_observability_s3_region }}"
+        state: present
+        aws_access_key: "{{ aws_access_key_id }}"
+        aws_secret_key: "{{ aws_secret_access_key }}"
+        tags:
+          Purpose: rhacm-observability
+          GUID: "{{ guid }}"
+      register: r_s3_bucket
+
+    # --- Namespace ---
+
+    - name: Create observability namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ ocp4_workload_rhacm_observability_namespace }}"
+
+    # --- Pull secret (required by MCO) ---
+
+    - name: Get cluster pull-secret
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: pull-secret
+        namespace: openshift-config
+      register: r_pull_secret
+
+    - name: Copy pull-secret to observability namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: multiclusterhub-operator-pull-secret
+            namespace: "{{ ocp4_workload_rhacm_observability_namespace }}"
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: "{{ r_pull_secret.resources[0].data['.dockerconfigjson'] }}"
+
+    # --- Thanos object storage secret ---
+
+    - name: Create Thanos object storage secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ ocp4_workload_rhacm_observability_thanos_secret_name }}"
+            namespace: "{{ ocp4_workload_rhacm_observability_namespace }}"
+          type: Opaque
+          stringData:
+            thanos.yaml: |
+              type: s3
+              config:
+                bucket: {{ ocp4_workload_rhacm_observability_s3_bucket }}
+                endpoint: s3.{{ ocp4_workload_rhacm_observability_s3_region }}.amazonaws.com
+                insecure: false
+                access_key: {{ aws_access_key_id }}
+                secret_key: {{ aws_secret_access_key }}
+
+    # --- MultiClusterObservability CR ---
+
+    - name: Apply MultiClusterObservability CR
+      kubernetes.core.k8s:
+        state: present
+        template: mco.yaml.j2
+
+    # --- Wait for observability to be ready ---
+
+    - name: Wait for MCO to report Ready
+      kubernetes.core.k8s_info:
+        api_version: observability.open-cluster-management.io/v1beta2
+        kind: MultiClusterObservability
+        name: "{{ ocp4_workload_rhacm_observability_mco_name }}"
+      register: r_mco
+      retries: "{{ ocp4_workload_rhacm_observability_wait_retries }}"
+      delay: "{{ ocp4_workload_rhacm_observability_wait_delay }}"
+      until:
+        - r_mco.resources | length > 0
+        - r_mco.resources[0].status.conditions | default([]) |
+          selectattr('type', 'equalto', 'Ready') |
+          selectattr('status', 'equalto', 'True') |
+          list | length > 0
+
+# --- Always retrieve the Grafana URL ---
+
+- name: Get Grafana route
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: grafana
+    namespace: "{{ ocp4_workload_rhacm_observability_namespace }}"
+  register: r_grafana_route
+  retries: 20
+  delay: 10
+  until:
+    - r_grafana_route.resources | length > 0
+    - r_grafana_route.resources[0].spec.host | default('') | length > 0
+
+- name: Set Grafana URL fact
+  ansible.builtin.set_fact:
+    _grafana_url: "https://{{ r_grafana_route.resources[0].spec.host }}"
+
+- name: Save AgnosticD user data
+  agnosticd.core.agnosticd_user_info:
+    msg: >-
+      RHACM Observability deployed. Grafana: {{ _grafana_url }}
+    data:
+      grafana_url: "{{ _grafana_url }}"
+      rhacm_observability_s3_bucket: "{{ ocp4_workload_rhacm_observability_s3_bucket }}"
+      rhacm_observability_namespace: "{{ ocp4_workload_rhacm_observability_namespace }}"

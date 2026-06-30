@@ -1,0 +1,48 @@
+---
+- name: Validate hub connection parameters for removal
+  ansible.builtin.assert:
+    that:
+      - ocp4_workload_rhacm_import_hub_api_url | length > 0
+      - ocp4_workload_rhacm_import_hub_token | length > 0
+    fail_msg: >-
+      Hub API URL and token are required for RHACM removal.
+
+- name: Delete auto-import secret from hub
+  kubernetes.core.k8s:
+    host: "{{ ocp4_workload_rhacm_import_hub_api_url }}"
+    api_key: "{{ ocp4_workload_rhacm_import_hub_token }}"
+    validate_certs: false
+    state: absent
+    api_version: v1
+    kind: Secret
+    name: auto-import-secret
+    namespace: "{{ ocp4_workload_rhacm_import_cluster_name }}"
+  ignore_errors: true
+
+- name: Delete ManagedCluster from hub
+  kubernetes.core.k8s:
+    host: "{{ ocp4_workload_rhacm_import_hub_api_url }}"
+    api_key: "{{ ocp4_workload_rhacm_import_hub_token }}"
+    validate_certs: false
+    state: absent
+    api_version: cluster.open-cluster-management.io/v1
+    kind: ManagedCluster
+    name: "{{ ocp4_workload_rhacm_import_cluster_name }}"
+  ignore_errors: true
+
+- name: Delete spoke namespace from hub
+  kubernetes.core.k8s:
+    host: "{{ ocp4_workload_rhacm_import_hub_api_url }}"
+    api_key: "{{ ocp4_workload_rhacm_import_hub_token }}"
+    validate_certs: false
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_rhacm_import_cluster_name }}"
+  ignore_errors: true
+
+- name: Report removal
+  ansible.builtin.debug:
+    msg: >-
+      Spoke cluster {{ ocp4_workload_rhacm_import_cluster_name }}
+      removed from RHACM hub.

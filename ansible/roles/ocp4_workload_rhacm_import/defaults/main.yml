@@ -1,0 +1,12 @@
+---
+ocp4_workload_rhacm_import_hub_api_url: ""
+ocp4_workload_rhacm_import_hub_token: ""
+ocp4_workload_rhacm_import_cluster_name: "{{ guid | default('student') }}"
+
+# Extra labels to apply to the ManagedCluster resource on the hub.
+# These are merged with the built-in labels (cloud, vendor, name, environment).
+ocp4_workload_rhacm_import_cluster_labels: {}
+
+ocp4_workload_rhacm_import_wait_timeout: 300
+ocp4_workload_rhacm_import_wait_retries: 30
+ocp4_workload_rhacm_import_wait_delay: 10

@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  author: Tosin Akinosho
+  description: Import a spoke cluster into an RHACM hub
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+  platforms:
+    - name: OpenShift
+      versions:
+        - "4.14+"
+  galaxy_tags:
+    - openshift
+    - rhacm
+    - multicluster
+    - spoke-import
+
+dependencies: []

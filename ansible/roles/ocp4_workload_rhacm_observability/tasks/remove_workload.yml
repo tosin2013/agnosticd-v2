@@ -1,0 +1,28 @@
+---
+- name: Delete MultiClusterObservability CR
+  kubernetes.core.k8s:
+    api_version: observability.open-cluster-management.io/v1beta2
+    kind: MultiClusterObservability
+    name: "{{ ocp4_workload_rhacm_observability_mco_name }}"
+    state: absent
+    wait: true
+    wait_timeout: 300
+
+- name: Delete observability namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_rhacm_observability_namespace }}"
+    state: absent
+    wait: true
+    wait_timeout: 300
+
+- name: Delete S3 bucket
+  amazon.aws.s3_bucket:
+    name: "{{ ocp4_workload_rhacm_observability_s3_bucket }}"
+    region: "{{ ocp4_workload_rhacm_observability_s3_region }}"
+    state: absent
+    force: true
+    aws_access_key: "{{ aws_access_key_id }}"
+    aws_secret_key: "{{ aws_secret_access_key }}"
+  ignore_errors: true

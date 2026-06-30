@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  author: Tosin Akinosho
+  description: Install OADP (OpenShift API for Data Protection) operator
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+  platforms:
+    - name: OpenShift
+      versions:
+        - "4.14+"
+  galaxy_tags:
+    - openshift
+    - oadp
+    - backup
+    - velero
+    - data-protection
+dependencies: []

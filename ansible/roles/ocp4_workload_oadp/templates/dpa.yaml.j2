@@ -1,0 +1,33 @@
+---
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: {{ ocp4_workload_oadp_dpa_name }}
+  namespace: {{ ocp4_workload_oadp_namespace }}
+spec:
+  configuration:
+    velero:
+      defaultPlugins:
+{% for plugin in ocp4_workload_oadp_dpa_velero_default_plugins %}
+        - {{ plugin }}
+{% endfor %}
+    nodeAgent:
+      enable: {{ ocp4_workload_oadp_dpa_enable_restic | bool | lower }}
+      uploaderType: kopia
+  backupLocations:
+    - velero:
+        provider: {{ ocp4_workload_oadp_dpa_backup_location_provider }}
+        default: true
+        objectStorage:
+          bucket: {{ ocp4_workload_oadp_dpa_backup_location_bucket }}
+          prefix: velero
+        config:
+          region: {{ ocp4_workload_oadp_dpa_backup_location_region }}
+        credential:
+          name: {{ ocp4_workload_oadp_dpa_backup_location_credential_name }}
+          key: {{ ocp4_workload_oadp_dpa_backup_location_credential_key }}
+  snapshotLocations:
+    - velero:
+        provider: {{ ocp4_workload_oadp_dpa_snapshot_location_provider }}
+        config:
+          region: {{ ocp4_workload_oadp_dpa_snapshot_location_region }}

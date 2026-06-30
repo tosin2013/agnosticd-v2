@@ -1,0 +1,13 @@
+---
+ocp4_workload_rhacm_observability_namespace: open-cluster-management-observability
+ocp4_workload_rhacm_observability_s3_bucket: "acm-obs-{{ guid }}"
+ocp4_workload_rhacm_observability_s3_region: "{{ aws_region | default('us-east-2') }}"
+ocp4_workload_rhacm_observability_thanos_secret_name: thanos-object-storage
+ocp4_workload_rhacm_observability_mco_name: observability
+
+ocp4_workload_rhacm_observability_retention: 5d
+ocp4_workload_rhacm_observability_storage_class: gp3-csi
+ocp4_workload_rhacm_observability_storage_size: 10Gi
+
+ocp4_workload_rhacm_observability_wait_retries: 60
+ocp4_workload_rhacm_observability_wait_delay: 15
