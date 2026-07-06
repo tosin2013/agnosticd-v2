@@ -1,0 +1,131 @@
+---
+# Install OpenShift Virtualization with nested virt support
+
+- name: Create openshift-cnv namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_openshift_virt_namespace }}"
+    state: present
+
+- name: Create OperatorGroup for OpenShift Virtualization
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: kubevirt-hyperconverged-group
+        namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+      spec:
+        targetNamespaces:
+          - "{{ ocp4_workload_openshift_virt_namespace }}"
+
+- name: Subscribe to OpenShift Virtualization operator
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: hco-operatorhub
+        namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+      spec:
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+        name: kubevirt-hyperconverged
+        channel: "{{ ocp4_workload_openshift_virt_channel }}"
+        installPlanApproval: Automatic
+
+- name: Wait for CNV operator to be installed
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+  register: r_cnv_csv
+  retries: 30
+  delay: 10
+  until:
+    - r_cnv_csv.resources | length > 0
+    - r_cnv_csv.resources | selectattr('status.phase', 'equalto', 'Succeeded') | list | length > 0
+
+- name: Get installed CSV name
+  ansible.builtin.set_fact:
+    cnv_csv_name: "{{ r_cnv_csv.resources | selectattr('status.phase', 'equalto', 'Succeeded') | map(attribute='metadata.name') | first }}"
+
+- name: Wait for HyperConverged CRD to be available
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: hyperconvergeds.hco.kubevirt.io
+  register: r_hco_crd
+  retries: 30
+  delay: 10
+  until:
+    - r_hco_crd.resources | length > 0
+    - r_hco_crd.resources[0].status is defined
+    - r_hco_crd.resources[0].status.conditions is defined
+    - r_hco_crd.resources[0].status.conditions | selectattr('type', 'equalto', 'Established') | selectattr('status', 'equalto', 'True') | list | length > 0
+
+- name: Wait for HCO webhook service to have endpoints
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Endpoints
+    name: hco-webhook-service
+    namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+  register: r_hco_webhook
+  retries: 30
+  delay: 10
+  until:
+    - r_hco_webhook.resources | length > 0
+    - r_hco_webhook.resources[0].subsets is defined
+    - r_hco_webhook.resources[0].subsets | length > 0
+
+- name: Create HyperConverged instance
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: hco.kubevirt.io/v1beta1
+      kind: HyperConverged
+      metadata:
+        name: kubevirt-hyperconverged
+        namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+      spec:
+        bareMetalPlatform: "{{ ocp4_workload_openshift_virt_bare_metal }}"
+
+- name: Wait for HyperConverged to be ready
+  kubernetes.core.k8s_info:
+    api_version: hco.kubevirt.io/v1beta1
+    kind: HyperConverged
+    name: kubevirt-hyperconverged
+    namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+  register: r_hco
+  retries: 60
+  delay: 10
+  until:
+    - r_hco.resources | length > 0
+    - r_hco.resources[0].status is defined
+    - r_hco.resources[0].status.conditions is defined
+    - r_hco.resources[0].status.conditions | selectattr('type', 'equalto', 'Available') | selectattr('status', 'equalto', 'True') | list | length > 0
+
+- name: Validate KVM support on nodes
+  kubernetes.core.k8s_info:
+    kind: Node
+  register: r_nodes
+
+- name: Check KVM devices availability
+  ansible.builtin.set_fact:
+    kvm_available: "{{ r_nodes.resources | json_query('[*].status.allocatable.\"devices.kubevirt.io/kvm\"') | select('defined') | list | length > 0 }}"
+
+- name: Report deployment info
+  agnosticd_user_info:
+    msg: >-
+      OpenShift Virtualization deployed successfully ({{ cnv_csv_name }}).
+      KVM support: {{ 'Available' if kvm_available else 'Not detected (nested virt may not be enabled)' }}
+
+- name: Report deployment data
+  agnosticd_user_info:
+    data:
+      openshift_virt_version: "{{ cnv_csv_name }}"
+      openshift_virt_namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+      kvm_available: "{{ kvm_available }}"

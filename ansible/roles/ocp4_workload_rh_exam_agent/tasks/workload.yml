@@ -1,0 +1,120 @@
+---
+# Deploy rh-exam-agent application stack
+
+- name: Create rh-exam-agent namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_rh_exam_agent_namespace }}"
+    state: present
+
+- name: Ensure OpenShift GitOps operator is available
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    namespace: "{{ ocp4_workload_rh_exam_agent_argocd_namespace }}"
+  register: r_gitops_csv
+  failed_when:
+    - r_gitops_csv.resources | length == 0
+
+- name: Create ArgoCD Application for rh-exam-agent
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: rh-exam-agent
+        namespace: "{{ ocp4_workload_rh_exam_agent_argocd_namespace }}"
+        labels:
+          app.kubernetes.io/name: rh-exam-agent
+          app.kubernetes.io/part-of: rh-exam-agent
+          app.kubernetes.io/managed-by: agnosticd
+      spec:
+        project: default
+        source:
+          repoURL: "{{ ocp4_workload_rh_exam_agent_git_repo }}"
+          targetRevision: "{{ ocp4_workload_rh_exam_agent_git_ref }}"
+          path: charts/rh-exam-agent
+          helm:
+            valueFiles:
+              - values.yaml
+              - values-sno.yaml
+            parameters:
+              - name: llm.model
+                value: "{{ ocp4_workload_rh_exam_agent_llm_model }}"
+              - name: postgresql.persistence.storageClass
+                value: "{{ ocp4_workload_rh_exam_agent_postgres_storage_class }}"
+              - name: postgresql.persistence.size
+                value: "{{ ocp4_workload_rh_exam_agent_postgres_storage_size }}"
+              - name: global.openshiftDomain
+                value: "{{ openshift_cluster_ingress_domain }}"
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: "{{ ocp4_workload_rh_exam_agent_namespace }}"
+        syncPolicy:
+          automated:
+            prune: "{{ ocp4_workload_rh_exam_agent_auto_prune }}"
+            selfHeal: "{{ ocp4_workload_rh_exam_agent_auto_sync }}"
+          syncOptions:
+            - CreateNamespace=true
+
+- name: Wait for ArgoCD Application to sync
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: rh-exam-agent
+    namespace: "{{ ocp4_workload_rh_exam_agent_argocd_namespace }}"
+  register: r_argocd_app
+  retries: 60
+  delay: 10
+  until:
+    - r_argocd_app.resources | length > 0
+    - r_argocd_app.resources[0].status is defined
+    - r_argocd_app.resources[0].status.sync is defined
+    - r_argocd_app.resources[0].status.sync.status == 'Synced'
+    - r_argocd_app.resources[0].status.health is defined
+    - r_argocd_app.resources[0].status.health.status == 'Healthy'
+
+- name: Get rh-exam-agent frontend route
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: rh-exam-agent
+    namespace: "{{ ocp4_workload_rh_exam_agent_namespace }}"
+  register: r_exam_agent_route
+  retries: 30
+  delay: 10
+  until:
+    - r_exam_agent_route.resources | length > 0
+    - r_exam_agent_route.resources[0].spec.host is defined
+
+- name: Wait for rh-exam-agent pods to be ready
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ ocp4_workload_rh_exam_agent_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/part-of=rh-exam-agent
+  register: r_exam_agent_pods
+  retries: 60
+  delay: 10
+  until:
+    - r_exam_agent_pods.resources | length > 0
+    - r_exam_agent_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length == r_exam_agent_pods.resources | length
+
+- name: Report deployment info
+  agnosticd_user_info:
+    msg: >-
+      rh-exam-agent deployed successfully via ArgoCD.
+      Application URL: https://{{ r_exam_agent_route.resources[0].spec.host }}
+      LLM Model: {{ ocp4_workload_rh_exam_agent_llm_model }}
+
+- name: Report deployment data
+  agnosticd_user_info:
+    data:
+      rh_exam_agent_url: "https://{{ r_exam_agent_route.resources[0].spec.host }}"
+      rh_exam_agent_namespace: "{{ ocp4_workload_rh_exam_agent_namespace }}"
+      rh_exam_agent_llm_model: "{{ ocp4_workload_rh_exam_agent_llm_model }}"
+      rh_exam_agent_git_repo: "{{ ocp4_workload_rh_exam_agent_git_repo }}"
+      rh_exam_agent_git_ref: "{{ ocp4_workload_rh_exam_agent_git_ref }}"

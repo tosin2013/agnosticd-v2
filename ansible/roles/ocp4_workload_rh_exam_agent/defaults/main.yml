@@ -1,0 +1,16 @@
+---
+# ocp4_workload_rh_exam_agent default variables
+
+ocp4_workload_rh_exam_agent_namespace: rh-exam-agent
+ocp4_workload_rh_exam_agent_git_repo: "https://github.com/tosin2013/rh-exam-agent.git"
+ocp4_workload_rh_exam_agent_git_ref: "main"
+ocp4_workload_rh_exam_agent_llm_model: "llama3.2-3b"  # or "granite-3.1-8b"
+
+# PostgreSQL settings
+ocp4_workload_rh_exam_agent_postgres_storage_size: "10Gi"
+ocp4_workload_rh_exam_agent_postgres_storage_class: "gp3-csi"
+
+# ArgoCD settings
+ocp4_workload_rh_exam_agent_argocd_namespace: "openshift-gitops"
+ocp4_workload_rh_exam_agent_auto_sync: true
+ocp4_workload_rh_exam_agent_auto_prune: true

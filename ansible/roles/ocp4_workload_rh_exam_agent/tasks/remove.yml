@@ -1,0 +1,32 @@
+---
+# Remove rh-exam-agent application
+
+- name: Delete ArgoCD Application
+  kubernetes.core.k8s:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: rh-exam-agent
+    namespace: "{{ ocp4_workload_rh_exam_agent_argocd_namespace }}"
+    state: absent
+
+- name: Wait for Application deletion to complete
+  kubernetes.core.k8s_info:
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    name: rh-exam-agent
+    namespace: "{{ ocp4_workload_rh_exam_agent_argocd_namespace }}"
+  register: r_app
+  retries: 60
+  delay: 10
+  until: r_app.resources | length == 0
+
+- name: Delete rh-exam-agent namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_rh_exam_agent_namespace }}"
+    state: absent
+
+- name: rh-exam-agent removal complete
+  ansible.builtin.debug:
+    msg: "rh-exam-agent application removed successfully"

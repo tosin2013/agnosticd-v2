@@ -1,0 +1,40 @@
+---
+# Remove Red Hat Advanced Cluster Management
+
+- name: Delete MultiClusterHub instance
+  kubernetes.core.k8s:
+    api_version: operator.open-cluster-management.io/v1
+    kind: MultiClusterHub
+    name: multiclusterhub
+    namespace: "{{ ocp4_workload_rhacm_namespace }}"
+    state: absent
+
+- name: Wait for MultiClusterHub deletion to complete
+  kubernetes.core.k8s_info:
+    api_version: operator.open-cluster-management.io/v1
+    kind: MultiClusterHub
+    name: multiclusterhub
+    namespace: "{{ ocp4_workload_rhacm_namespace }}"
+  register: r_mch
+  retries: 60
+  delay: 10
+  until: r_mch.resources | length == 0
+
+- name: Delete RHACM Subscription
+  kubernetes.core.k8s:
+    api_version: operators.coreos.com/v1alpha1
+    kind: Subscription
+    name: advanced-cluster-management
+    namespace: "{{ ocp4_workload_rhacm_namespace }}"
+    state: absent
+
+- name: Delete RHACM namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_rhacm_namespace }}"
+    state: absent
+
+- name: RHACM removal complete
+  ansible.builtin.debug:
+    msg: "Red Hat Advanced Cluster Management removed successfully"

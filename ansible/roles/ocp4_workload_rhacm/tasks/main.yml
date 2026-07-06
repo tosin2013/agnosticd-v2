@@ -1,0 +1,11 @@
+---
+# Main task file for ocp4_workload_rhacm
+# Dispatches based on ACTION
+
+- name: Run workload tasks for RHACM
+  when: ACTION == "provision" or ACTION == "create"
+  ansible.builtin.include_tasks: workload.yml
+
+- name: Run removal tasks for RHACM
+  when: ACTION == "destroy" or ACTION == "remove"
+  ansible.builtin.include_tasks: remove.yml

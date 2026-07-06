@@ -1,0 +1,40 @@
+---
+# Remove OpenShift Virtualization
+
+- name: Delete HyperConverged instance
+  kubernetes.core.k8s:
+    api_version: hco.kubevirt.io/v1beta1
+    kind: HyperConverged
+    name: kubevirt-hyperconverged
+    namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+    state: absent
+
+- name: Wait for HyperConverged deletion to complete
+  kubernetes.core.k8s_info:
+    api_version: hco.kubevirt.io/v1beta1
+    kind: HyperConverged
+    name: kubevirt-hyperconverged
+    namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+  register: r_hco
+  retries: 60
+  delay: 10
+  until: r_hco.resources | length == 0
+
+- name: Delete OpenShift Virtualization Subscription
+  kubernetes.core.k8s:
+    api_version: operators.coreos.com/v1alpha1
+    kind: Subscription
+    name: hco-operatorhub
+    namespace: "{{ ocp4_workload_openshift_virt_namespace }}"
+    state: absent
+
+- name: Delete openshift-cnv namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_openshift_virt_namespace }}"
+    state: absent
+
+- name: OpenShift Virtualization removal complete
+  ansible.builtin.debug:
+    msg: "OpenShift Virtualization removed successfully"

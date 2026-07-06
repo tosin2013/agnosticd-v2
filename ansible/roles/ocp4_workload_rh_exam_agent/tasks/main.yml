@@ -1,0 +1,11 @@
+---
+# Main task file for ocp4_workload_rh_exam_agent
+# Dispatches based on ACTION
+
+- name: Run workload tasks for rh-exam-agent
+  when: ACTION == "provision" or ACTION == "create"
+  ansible.builtin.include_tasks: workload.yml
+
+- name: Run removal tasks for rh-exam-agent
+  when: ACTION == "destroy" or ACTION == "remove"
+  ansible.builtin.include_tasks: remove.yml

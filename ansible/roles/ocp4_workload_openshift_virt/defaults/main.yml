@@ -1,0 +1,7 @@
+---
+# ocp4_workload_openshift_virt default variables
+
+ocp4_workload_openshift_virt_namespace: openshift-cnv
+ocp4_workload_openshift_virt_channel: "stable"
+ocp4_workload_openshift_virt_enable_nested: true  # auto-detected from instance type
+ocp4_workload_openshift_virt_bare_metal: false    # set true for bare metal instances

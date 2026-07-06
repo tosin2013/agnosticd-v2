@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  author: AgnosticD Community
+  description: Install Red Hat Advanced Cluster Management (RHACM)
+  company: Red Hat
+  license: GPLv3
+  min_ansible_version: "2.15"
+  platforms:
+    - name: OpenShift
+      versions:
+        - "4.21"
+        - "4.22"
+  galaxy_tags:
+    - openshift
+    - rhacm
+    - cluster-management
+
+dependencies: []
