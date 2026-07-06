@@ -1,0 +1,21 @@
+---
+# =========================================================
+# rh-exam-agent SNO - Workloads Deployment
+# =========================================================
+# Deploys workloads in order:
+# 1. cert-manager (infra_workload)
+# 2. OpenShift AI operators
+# 3. RHACM 2.17
+# 4. OpenShift Virtualization (with nested virt support)
+# 5. rh-exam-agent application stack
+# =========================================================
+
+- name: Step 006 - Workloads
+  hosts: bastions
+  gather_facts: false
+  become: false
+  tasks:
+    # Import standard workload execution role
+    - name: Execute workloads
+      ansible.builtin.include_role:
+        name: host_ocp4_workload

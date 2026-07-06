@@ -1,0 +1,147 @@
+---
+# =========================================================
+# rh-exam-agent SNO Config - Default Variables
+# =========================================================
+# This config deploys a Single-Node OpenShift cluster with:
+# - Red Hat OpenShift AI (RHOAI)
+# - Red Hat Advanced Cluster Management (RHACM)
+# - OpenShift Virtualization (with nested virt support)
+# - rh-exam-agent application stack
+#
+# Supports two variants:
+# 1. Nested Virtualization (m8i/c8i instances) - cost-optimized
+# 2. Bare Metal (g4dn.metal) - performance-optimized
+# =========================================================
+
+# -------------------------------------------------
+# General variables
+# -------------------------------------------------
+purpose: development
+
+output_dir: /tmp/output_dir
+
+# The {{ guid }} is used everywhere and it is what differentiates otherwise
+# identical environments. Make this unique.
+guid: notset
+
+# Used to add metadata (tags) to cloud objects created
+project_tag: "{{ config }}-{{ guid }}"
+
+# Base Domain to be used for the environment
+base_domain: dynamic.redhatworkshops.io
+
+# -------------------------------------------------
+# SNO Topology
+# -------------------------------------------------
+# Single-Node OpenShift: 1 control plane, 0 workers
+control_plane_instance_count: 1
+worker_instance_count: 0
+
+# OpenShift version - targeting 4.22 (latest stable)
+host_ocp4_installer_version: "4.22"
+host_ocp4_installer_root_url: http://mirror.openshift.com/pub/openshift-v4/clients
+
+# -------------------------------------------------
+# AWS Instance Type Selection
+# -------------------------------------------------
+# Default: Nested virtualization (cost-optimized)
+# Override in vars file for bare metal variant
+#
+# Nested Virt Options (C8i/M8i/R8i with KVM support):
+#   - m8i.4xlarge: 16 vCPU, 64 GiB RAM, ~$2.50/hr
+#   - c8i.4xlarge: 16 vCPU, 32 GiB RAM, ~$2.20/hr
+#
+# Bare Metal Options (native performance):
+#   - g4dn.metal: 96 vCPU, 384 GiB RAM, 8x NVIDIA T4, $7.824/hr
+#
+control_plane_instance_type: "m8i.4xlarge"
+
+# Enable nested virtualization for OpenShift Virt
+# Set to false for bare metal instances
+enable_nested_virtualization: true
+
+# -------------------------------------------------
+# Set up Bastion
+# -------------------------------------------------
+install_bastion: true
+bastion_setup_student_user: true
+bastion_student_user_name: lab-user
+bastion_student_user_password: ""
+bastion_student_user_password_length: 12
+
+# -------------------------------------------------
+# Call role host_satellite_repositories
+# -------------------------------------------------
+install_satellite_repositories: true
+
+# These vars are needed and need to come from secrets:
+# host_satellite_repositories_hostname:
+# host_satellite_repositories_ha:
+# host_satellite_repositories_org:
+# host_satellite_repositories_activationkey:
+
+# -------------------------------------------------
+# OpenShift Workloads
+# -------------------------------------------------
+# Workloads are executed in the order listed
+# Core workloads: https://github.com/rhpds/core_workloads
+#
+# For rh-exam-agent, we deploy:
+# 1. cert-manager (prerequisite for RHOAI)
+# 2. OpenShift AI operators (RHOAI, GPU, Pipelines, Serverless, MinIO)
+# 3. RHACM (cluster management for exam lab provisioning)
+# 4. OpenShift Virtualization (VM provisioning for RHEL exams)
+# 5. rh-exam-agent application stack (Helm via ArgoCD)
+
+infra_workloads:
+  - agnosticd.core_workloads.ocp4_workload_cert_manager
+
+workloads:
+  - ocp4_workload_openshift_ai
+  - ocp4_workload_rhacm
+  - ocp4_workload_openshift_virt
+  - ocp4_workload_rh_exam_agent
+
+# -------------------------------------------------
+# ocp4_workload_openshift_ai Variables
+# -------------------------------------------------
+ocp4_workload_openshift_ai_version: "2.16"
+ocp4_workload_openshift_ai_enable_gpu: true
+ocp4_workload_openshift_ai_install_pipelines: true
+ocp4_workload_openshift_ai_install_serverless: true
+ocp4_workload_openshift_ai_install_minio: true
+
+# -------------------------------------------------
+# ocp4_workload_rhacm Variables
+# -------------------------------------------------
+ocp4_workload_rhacm_version: "2.17"
+
+# -------------------------------------------------
+# ocp4_workload_openshift_virt Variables
+# -------------------------------------------------
+# Auto-detect nested virt from enable_nested_virtualization var
+ocp4_workload_openshift_virt_enable_nested: "{{ enable_nested_virtualization }}"
+ocp4_workload_openshift_virt_storage_class: "gp3-csi"
+
+# -------------------------------------------------
+# ocp4_workload_rh_exam_agent Variables
+# -------------------------------------------------
+ocp4_workload_rh_exam_agent_git_repo: "https://github.com/tosin2013/rh-exam-agent.git"
+ocp4_workload_rh_exam_agent_git_ref: "main"
+ocp4_workload_rh_exam_agent_llm_model: "llama3.2-3b"  # or "granite-3.1-8b"
+ocp4_workload_rh_exam_agent_namespace: "rh-exam-agent"
+ocp4_workload_rh_exam_agent_deploy_via_argocd: true
+
+# -------------------------------------------------
+# Cloud Provider Tags
+# -------------------------------------------------
+# All resources tagged for cost tracking and auto-cleanup
+cloud_tags:
+  - key: "owner"
+    value: "{{ guid }}"
+  - key: "config"
+    value: "{{ config }}"
+  - key: "purpose"
+    value: "{{ purpose }}"
+  - key: "project"
+    value: "rh-exam-agent"

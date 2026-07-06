@@ -1,0 +1,15 @@
+---
+# =========================================================
+# rh-exam-agent SNO - Destroy Environment
+# =========================================================
+# Tears down the SNO cluster and all AWS resources
+# =========================================================
+
+- name: Destroy environment
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Run infra teardown
+      ansible.builtin.include_role:
+        name: infra_destroy_env

@@ -1,0 +1,15 @@
+---
+# =========================================================
+# rh-exam-agent SNO - Status Check
+# =========================================================
+# Reports cluster health and component status
+# =========================================================
+
+- name: Check environment status
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Get environment status
+      ansible.builtin.include_role:
+        name: infra_status_env

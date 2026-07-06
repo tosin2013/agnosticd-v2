@@ -1,0 +1,15 @@
+---
+# =========================================================
+# rh-exam-agent SNO - Software Deployment
+# =========================================================
+# This playbook deploys OpenShift and all workloads
+# =========================================================
+
+- name: Step 004 - Software - Deploy OpenShift
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Install Single-Node OpenShift
+      ansible.builtin.include_role:
+        name: host_ocp4_deploy

@@ -1,0 +1,16 @@
+---
+# =========================================================
+# rh-exam-agent SNO - Stop Environment
+# =========================================================
+# Stops the EC2 instance (cost control)
+# Cluster can be restarted with start_env.yml
+# =========================================================
+
+- name: Stop environment for cost savings
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Stop EC2 instances
+      ansible.builtin.include_role:
+        name: infra_stop_env

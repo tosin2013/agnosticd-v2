@@ -1,0 +1,15 @@
+---
+# =========================================================
+# rh-exam-agent SNO - Start Environment
+# =========================================================
+# Starts previously stopped EC2 instance
+# =========================================================
+
+- name: Start environment
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Start EC2 instances
+      ansible.builtin.include_role:
+        name: infra_start_env
