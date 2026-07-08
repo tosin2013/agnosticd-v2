@@ -224,6 +224,9 @@ WRAPPER
   exec "${ORIGINAL_ARGUMENTS[@]}"
 fi
 
+# Path to the optional dynamic dependency installer (agnosticd-v2 only)
+INSTALL_PLAYBOOK="./ansible/install_dynamic_dependencies.yml"
+
 # Detect AAP execution node environment (-u root pattern)
 AAP=0
 for ((i = 1; i < ${#args[@]}; i++)); do
@@ -256,3 +259,4 @@ fi
 # Chain exec original command
 log_debug "chain exec-ing requested command: ${ORIGINAL_ARGUMENTS[*]}"
 exec "${ORIGINAL_ARGUMENTS[@]}"
+
