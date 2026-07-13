@@ -1,6 +1,167 @@
 ---
 # Deploy rh-exam-agent application stack
 
+- name: Get cluster ingress domain
+  kubernetes.core.k8s_info:
+    api_version: config.openshift.io/v1
+    kind: Ingress
+    name: cluster
+  register: cluster_ingress
+
+- name: Set ingress domain fact
+  ansible.builtin.set_fact:
+    openshift_cluster_ingress_domain: "{{ cluster_ingress.resources[0].spec.domain }}"
+
+##
+## GPU MachineSet — clone an existing worker MachineSet with GPU instance type
+##
+
+- name: Get cluster infrastructure ID
+  kubernetes.core.k8s_info:
+    api_version: config.openshift.io/v1
+    kind: Infrastructure
+    name: cluster
+  register: r_infra
+
+- name: Set infrastructure facts
+  ansible.builtin.set_fact:
+    ocp4_infra_id: "{{ r_infra.resources[0].status.infrastructureName }}"
+    ocp4_platform_status: "{{ r_infra.resources[0].status.platformStatus }}"
+
+- name: Get existing worker MachineSets
+  kubernetes.core.k8s_info:
+    api_version: machine.openshift.io/v1beta1
+    kind: MachineSet
+    namespace: openshift-machine-api
+    label_selectors:
+      - "machine.openshift.io/cluster-api-cluster={{ ocp4_infra_id }}"
+  register: r_machinesets
+
+- name: Select first worker MachineSet as template
+  ansible.builtin.set_fact:
+    ocp4_source_machineset: >-
+      {{ r_machinesets.resources
+         | selectattr('spec.template.spec.providerSpec.value.instanceType', 'defined')
+         | selectattr('spec.replicas', 'gt', 0)
+         | first }}
+
+- name: Set GPU MachineSet name
+  ansible.builtin.set_fact:
+    ocp4_gpu_machineset_name: "{{ ocp4_infra_id }}-gpu-worker-{{ ocp4_platform_status.aws.region }}{{ ocp4_workload_rh_exam_agent_gpu_az_suffix }}"
+
+- name: Check if GPU MachineSet already exists
+  kubernetes.core.k8s_info:
+    api_version: machine.openshift.io/v1beta1
+    kind: MachineSet
+    name: "{{ ocp4_gpu_machineset_name }}"
+    namespace: openshift-machine-api
+  register: r_gpu_machineset_existing
+
+- name: Create GPU worker MachineSet
+  when: r_gpu_machineset_existing.resources | length == 0
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: machine.openshift.io/v1beta1
+      kind: MachineSet
+      metadata:
+        name: "{{ ocp4_gpu_machineset_name }}"
+        namespace: openshift-machine-api
+        labels:
+          machine.openshift.io/cluster-api-cluster: "{{ ocp4_infra_id }}"
+        annotations:
+          machine.openshift.io/GPU: "1"
+          machine.openshift.io/memoryMb: "65536"
+          machine.openshift.io/vCPU: "8"
+          capacity.cluster-autoscaler.kubernetes.io/labels: kubernetes.io/arch=amd64
+      spec:
+        replicas: "{{ ocp4_workload_rh_exam_agent_gpu_worker_count }}"
+        selector:
+          matchLabels:
+            machine.openshift.io/cluster-api-cluster: "{{ ocp4_infra_id }}"
+            machine.openshift.io/cluster-api-machineset: "{{ ocp4_gpu_machineset_name }}"
+        template:
+          metadata:
+            labels:
+              machine.openshift.io/cluster-api-cluster: "{{ ocp4_infra_id }}"
+              machine.openshift.io/cluster-api-machine-role: worker
+              machine.openshift.io/cluster-api-machine-type: worker
+              machine.openshift.io/cluster-api-machineset: "{{ ocp4_gpu_machineset_name }}"
+          spec:
+            lifecycleHooks: {}
+            metadata: {}
+            providerSpec:
+              value:
+                ami:
+                  id: "{{ ocp4_source_machineset.spec.template.spec.providerSpec.value.ami.id }}"
+                apiVersion: machine.openshift.io/v1beta1
+                blockDevices:
+                  - ebs:
+                      encrypted: true
+                      iops: 0
+                      kmsKey:
+                        arn: ""
+                      volumeSize: 100
+                      volumeType: gp3
+                credentialsSecret:
+                  name: aws-cloud-credentials
+                deviceIndex: 0
+                iamInstanceProfile:
+                  id: "{{ ocp4_source_machineset.spec.template.spec.providerSpec.value.iamInstanceProfile.id }}"
+                instanceType: "{{ ocp4_workload_rh_exam_agent_gpu_instance_type }}"
+                kind: AWSMachineProviderConfig
+                metadata: {}
+                metadataServiceOptions: {}
+                placement:
+                  availabilityZone: "{{ ocp4_platform_status.aws.region }}{{ ocp4_workload_rh_exam_agent_gpu_az_suffix }}"
+                  region: "{{ ocp4_platform_status.aws.region }}"
+                securityGroups: "{{ ocp4_source_machineset.spec.template.spec.providerSpec.value.securityGroups }}"
+                subnet:
+                  filters:
+                    - name: "tag:Name"
+                      values:
+                        - "{{ ocp4_infra_id }}-subnet-private-{{ ocp4_platform_status.aws.region }}{{ ocp4_workload_rh_exam_agent_gpu_az_suffix }}"
+                tags: "{{ ocp4_source_machineset.spec.template.spec.providerSpec.value.tags }}"
+                userDataSecret:
+                  name: worker-user-data
+
+- name: Wait for GPU Machine to reach Running phase
+  kubernetes.core.k8s_info:
+    api_version: machine.openshift.io/v1beta1
+    kind: Machine
+    namespace: openshift-machine-api
+    label_selectors:
+      - "machine.openshift.io/cluster-api-machineset={{ ocp4_gpu_machineset_name }}"
+  register: r_gpu_machines
+  retries: 60
+  delay: 15
+  until:
+    - r_gpu_machines.resources | length > 0
+    - r_gpu_machines.resources | selectattr('status.phase', 'defined') | selectattr('status.phase', 'equalto', 'Running') | list | length == (ocp4_workload_rh_exam_agent_gpu_worker_count | int)
+
+- name: Get GPU node names
+  ansible.builtin.set_fact:
+    ocp4_gpu_node_names: >-
+      {{ r_gpu_machines.resources
+         | map(attribute='status.nodeRef.name')
+         | list }}
+
+- name: Label GPU nodes
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Node
+      metadata:
+        name: "{{ item }}"
+        labels:
+          node-role.kubernetes.io/gpu: ""
+  loop: "{{ ocp4_gpu_node_names }}"
+
+##
+## Application deployment
+##
+
 - name: Create rh-exam-agent namespace
   kubernetes.core.k8s:
     api_version: v1
@@ -104,14 +265,14 @@
     - r_exam_agent_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length == r_exam_agent_pods.resources | length
 
 - name: Report deployment info
-  agnosticd_user_info:
+  agnosticd.core.agnosticd_user_info:
     msg: >-
       rh-exam-agent deployed successfully via ArgoCD.
       Application URL: https://{{ r_exam_agent_route.resources[0].spec.host }}
       LLM Model: {{ ocp4_workload_rh_exam_agent_llm_model }}
 
 - name: Report deployment data
-  agnosticd_user_info:
+  agnosticd.core.agnosticd_user_info:
     data:
       rh_exam_agent_url: "https://{{ r_exam_agent_route.resources[0].spec.host }}"
       rh_exam_agent_namespace: "{{ ocp4_workload_rh_exam_agent_namespace }}"

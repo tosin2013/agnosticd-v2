@@ -4,7 +4,7 @@
 ocp4_workload_rh_exam_agent_namespace: rh-exam-agent
 ocp4_workload_rh_exam_agent_git_repo: "https://github.com/tosin2013/rh-exam-agent.git"
 ocp4_workload_rh_exam_agent_git_ref: "main"
-ocp4_workload_rh_exam_agent_llm_model: "llama3.2-3b"  # or "granite-3.1-8b"
+ocp4_workload_rh_exam_agent_llm_model: "llama3.2-3b"
 
 # PostgreSQL settings
 ocp4_workload_rh_exam_agent_postgres_storage_size: "10Gi"
@@ -14,3 +14,8 @@ ocp4_workload_rh_exam_agent_postgres_storage_class: "gp3-csi"
 ocp4_workload_rh_exam_agent_argocd_namespace: "openshift-gitops"
 ocp4_workload_rh_exam_agent_auto_sync: true
 ocp4_workload_rh_exam_agent_auto_prune: true
+
+# GPU worker node (created as a separate MachineSet post-provision)
+ocp4_workload_rh_exam_agent_gpu_instance_type: "g6e.2xlarge"
+ocp4_workload_rh_exam_agent_gpu_worker_count: 1
+ocp4_workload_rh_exam_agent_gpu_az_suffix: "a"
