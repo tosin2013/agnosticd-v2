@@ -1,0 +1,59 @@
+---
+name: build-ee-legacy-rhel-push
+
+on:
+  push:
+    branches:
+    - main
+    paths:
+    - tools/execution_environments/ee-multicloud-legacy-rhel/**
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - uses: actions/setup-python@v4
+
+      - name: Cache Buildah layers
+        uses: actions/cache@v4
+        with:
+          path: /var/lib/containers/storage
+          key: ${{ runner.os }}-buildah-cache-legacy-rhel-${{ hashFiles('tools/execution_environments/ee-multicloud-legacy-rhel/Containerfile', 'tools/execution_environments/ee-multicloud-legacy-rhel/requirements.*') }}
+          restore-keys: |
+            ${{ runner.os }}-buildah-cache-legacy-rhel-
+
+      - name: Generate date tag
+        id: tag
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Buildah Action
+        uses: redhat-actions/buildah-build@v2
+        id: build-image
+        with:
+          image: ee-multicloud-legacy-rhel
+          tags: chained-legacy-rhel-${{ steps.tag.outputs.date }} chained-legacy-rhel-latest ${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          platforms: linux/amd64
+          context: tools/execution_environments/ee-multicloud-legacy-rhel
+          containerfiles: |-
+            tools/execution_environments/ee-multicloud-legacy-rhel/Containerfile
+          layers: true
+          build-args: |
+            AAP_CERTIFIED_TOKEN=${{ secrets.AAP_CERTIFIED_TOKEN }}
+            AAP_VALIDATED_TOKEN=${{ secrets.AAP_VALIDATED_TOKEN }}
+
+      - name: Push To quay.io
+        id: push-to-quay
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build-image.outputs.image }}
+          tags: ${{ steps.build-image.outputs.tags }}
+          registry: quay.io/redhat-gpte
+          username: ${{ secrets.QUAY_REDHAT_GPTE_LEGACY_USER }}
+          password: ${{ secrets.QUAY_REDHAT_GPTE_LEGACY_TOKEN }}

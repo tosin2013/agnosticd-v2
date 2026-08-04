@@ -1,0 +1,78 @@
+= ee-multicloud-legacy-rhel
+
+Fork of `ee-multicloud-public` with `ansible-core` pinned to `>=2.16,<2.18`
+for CIs that manage RHEL 7 or RHEL 8 (default Python 3.6) nodes.
+
+== Why this exists
+
+ansible-core 2.18+ dropped support for Python < 3.7 on managed nodes. The
+standard `ee-multicloud` ships ansible-core 2.20+ and generates module wrapper
+code (`from __future__ import annotations`) that fails on:
+
+- **RHEL 7**: Python 2.7 / 3.6 (no Python 3.7+ available in standard repos)
+- **RHEL 8**: default `/usr/libexec/platform-python` is Python 3.6
+
+CIs like `automating-ripu-with-ansible` provision these VMs for upgrade demos
+and need an EE that can manage them.
+
+== Why not use ee-ubi9-aap2.5?
+
+The `ee-ubi9-aap2.5` image has compatible ansible-core (2.15) but uses the
+standard ansible-builder entrypoint. It does not run
+`install_dynamic_dependencies.yml` before the main playbook, which is required
+by agnosticd-v2 CIs to install cloud provider collections and CI-specific
+requirements at runtime.
+
+The chained entrypoint in this EE detects the AAP environment and runs
+`install_dynamic_dependencies.yml` automatically before chain-executing the
+deployer playbook.
+
+== What's different from ee-multicloud-public
+
+Only the ansible-core version pin in `requirements.txt`:
+
+  ansible-core            (unpinned, latest)     # ee-multicloud-public
+  ansible-core>=2.16,<2.18                       # ee-multicloud-legacy-rhel
+
+Everything else is identical: same entrypoint, same collections, same binaries,
+same Python 3.12 runtime in the EE itself. The Containerfile has minor layer
+optimizations (collapsed RUN statements) but is functionally equivalent.
+
+== When to use this EE
+
+Use `ee-multicloud-legacy-rhel` when your CI:
+
+1. Uses agnosticd-v2 as the deployer (`scm_url: https://github.com/rhpds/agnosticd-v2`)
+2. Manages RHEL 7 or RHEL 8 nodes with default Python (2.7 or 3.6)
+3. Runs on OCP-based AAP2 controllers (prod0/prod1, event0/event1)
+
+Set in your agnosticv config:
+
+  __meta__:
+    deployer:
+      execution_environment:
+        image: quay.io/redhat-gpte/ee-multicloud-legacy-rhel:<tag>
+        pull: missing
+
+== When to stop using this EE
+
+When the CI no longer needs to manage RHEL 7 nodes (RHEL 7 is EOL), switch
+to the standard `ee-multicloud` and set `ansible_python_interpreter` to
+`/usr/bin/python3.9` or later for any remaining RHEL 8 nodes.
+
+== Building
+
+Manual dispatch:
+
+  gh workflow run manual-build-ee-legacy-rhel -f tag=chained-legacy-rhel-YYYY-MM-DD
+
+PR builds trigger automatically on changes to this directory.
+
+== Changelog
+
+=== chained-legacy-rhel-2026-07-23
+
+* Initial build
+* Fork of ee-multicloud-public at commit 8242fb367dd8
+* Pin `ansible-core>=2.16,<2.18` for RHEL 7/8 managed node support
+* Optimize Containerfile layers (collapse RUN statements, remove dead code)
