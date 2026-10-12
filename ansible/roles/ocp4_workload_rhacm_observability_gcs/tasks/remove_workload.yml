@@ -1,0 +1,32 @@
+---
+- name: Delete MultiClusterObservability CR
+  kubernetes.core.k8s:
+    api_version: observability.open-cluster-management.io/v1beta2
+    kind: MultiClusterObservability
+    name: "{{ ocp4_workload_rhacm_observability_gcs_mco_name }}"
+    state: absent
+    wait: true
+    wait_timeout: 300
+
+- name: Delete observability namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ocp4_workload_rhacm_observability_gcs_namespace }}"
+    state: absent
+    wait: true
+    wait_timeout: 300
+
+- name: Set GCP credentials JSON
+  ansible.builtin.set_fact:
+    _gcp_sa_json: >-
+      {{ gcp_credentials | to_nice_json }}
+
+- name: Delete GCS bucket
+  google.cloud.gcp_storage_bucket:
+    name: "{{ ocp4_workload_rhacm_observability_gcs_bucket }}"
+    project: "{{ ocp4_workload_rhacm_observability_gcs_project }}"
+    auth_kind: serviceaccount
+    service_account_contents: "{{ _gcp_sa_json }}"
+    state: absent
+  ignore_errors: true

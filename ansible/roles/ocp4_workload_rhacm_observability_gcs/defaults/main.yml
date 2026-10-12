@@ -1,0 +1,15 @@
+---
+ocp4_workload_rhacm_observability_gcs_namespace: open-cluster-management-observability
+ocp4_workload_rhacm_observability_gcs_bucket: "acm-obs-{{ guid }}"
+ocp4_workload_rhacm_observability_gcs_project: "{{ gcp_project_id | default(gcp_credentials.project_id) }}"
+ocp4_workload_rhacm_observability_gcs_location: US
+ocp4_workload_rhacm_observability_gcs_storage_class: STANDARD
+ocp4_workload_rhacm_observability_gcs_thanos_secret_name: thanos-object-storage
+ocp4_workload_rhacm_observability_gcs_mco_name: observability
+
+ocp4_workload_rhacm_observability_gcs_retention: 5d
+ocp4_workload_rhacm_observability_gcs_k8s_storage_class: standard-csi
+ocp4_workload_rhacm_observability_gcs_storage_size: 10Gi
+
+ocp4_workload_rhacm_observability_gcs_wait_retries: 60
+ocp4_workload_rhacm_observability_gcs_wait_delay: 15
