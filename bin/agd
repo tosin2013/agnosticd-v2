@@ -228,6 +228,15 @@ run_ansible_navigator() {
     )
   fi
 
+  # Pass sandbox_id as an extra-var when SANDBOX_ID is set (Mode 2 multi-hub).
+  # This allows vars files to use {{ sandbox_id }} for values like the
+  # cert-manager DNS zone name, avoiding Jinja2 regex_replace evaluation
+  # issues inside the Execution Environment.
+  SANDBOX_ARGS=()
+  if [[ -n "${SANDBOX_ID:-}" ]]; then
+    SANDBOX_ARGS=(--extra-vars "sandbox_id=${SANDBOX_ID}")
+  fi
+
   ansible-navigator run "ansible/${playbook}" \
     --extra-vars "ACTION=${action}" \
     --extra-vars "guid=${GUID}" \
@@ -236,6 +245,7 @@ run_ansible_navigator() {
     --extra-vars "@/secrets/secrets-${ACCOUNT_NAME}.yml" \
     --extra-vars "@/secrets/secrets.yml" \
     --extra-vars "output_dir=/output_dir_root/${GUID}" \
+    "${SANDBOX_ARGS[@]}" \
     --execution-environment-volume-mounts ${VARS_DIR}:/vars:Z \
     --execution-environment-volume-mounts ${SECRETS_DIR}:/secrets:Z \
     --execution-environment-volume-mounts ${OUTPUT_DIR_ROOT}:/output_dir_root:Z \
